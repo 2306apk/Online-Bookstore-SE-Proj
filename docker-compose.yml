@@ -1,0 +1,12 @@
+services:
+  mongodb:
+    image: mongo:8.0
+    container_name: online-bookstore-mongodb
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    volumes:
+      - online-bookstore-mongo-data:/data/db
+
+volumes:
+  online-bookstore-mongo-data:
