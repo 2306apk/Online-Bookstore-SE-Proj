@@ -1,32 +1,74 @@
-const allowedParameters = new Set(['page', 'limit', 'category']);
+const ALLOWED_PARAMETERS = new Set([
+  'page',
+  'limit',
+  'category',
+  'q',
+  'author',
+  'keyword'
+]);
+
+function parsePositiveInteger(value, name, defaultValue, maxValue) {
+  if (value === undefined) return defaultValue;
+
+  if (
+    typeof value !== 'string' ||
+    !/^\d+$/.test(value)
+  ) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  const parsed = Number(value);
+
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < 1 ||
+    parsed > maxValue
+  ) {
+    throw new Error(`${name} must be between 1 and ${maxValue}`);
+  }
+
+  return parsed;
+}
+
+function parseSearchText(value, name) {
+  if (value === undefined) return undefined;
+
+  if (typeof value !== 'string') {
+    throw new Error(`${name} must be a string`);
+  }
+
+  const parsed = value.trim();
+
+  if (!parsed || parsed.length > 100) {
+    throw new Error(`${name} must contain 1 to 100 characters`);
+  }
+
+  return parsed;
+}
 
 export function validateBrowseQuery(query) {
-  for (const [key, value] of Object.entries(query)) {
-    if (!allowedParameters.has(key) || typeof value !== 'string') {
-      return {
-        valid: false,
-        message: `Invalid query parameter: ${key}`,
-      };
+  for (const key of Object.keys(query)) {
+    if (!ALLOWED_PARAMETERS.has(key)) {
+      throw new Error(`Unsupported query parameter: ${key}`);
     }
   }
 
-  const page = Number(query.page ?? 1);
-  const limit = Number(query.limit ?? 20);
+  const page = parsePositiveInteger(query.page, 'page', 1, 1000000);
+  const limit = parsePositiveInteger(query.limit, 'limit', 20, 100);
 
-  if (!Number.isInteger(page) || page < 1) {
-    return { valid: false, message: 'Page must be a positive integer' };
-  }
-
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    return { valid: false, message: 'Limit must be between 1 and 100' };
+  if (
+    query.category !== undefined &&
+    (typeof query.category !== 'string' || !query.category.trim())
+  ) {
+    throw new Error('category must be a non-empty string');
   }
 
   return {
-    valid: true,
-    value: {
-      page,
-      limit,
-      category: query.category,
-    },
+    page,
+    limit,
+    category: query.category?.trim(),
+    q: parseSearchText(query.q, 'q'),
+    author: parseSearchText(query.author, 'author'),
+    keyword: parseSearchText(query.keyword, 'keyword')
   };
 }

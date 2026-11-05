@@ -1,24 +1,28 @@
 import { Router } from 'express';
 import { browseBooks } from './service.js';
+import { searchBooks } from './search.js';
 import { validateBrowseQuery } from './schemas.js';
 
 const router = Router();
 
-router.get('/', async (request, response, next) => {
+router.get('/', async (request, response) => {
   try {
-    const validation = validateBrowseQuery(request.query);
+    const query = validateBrowseQuery(request.query);
 
-    if (!validation.valid) {
-      return response.status(400).json({
-        error: validation.message,
-      });
-    }
+    const hasSearch =
+      Boolean(query.q) ||
+      Boolean(query.author) ||
+      Boolean(query.keyword);
 
-    const result = await browseBooks(validation.value);
+    const result = hasSearch
+      ? await searchBooks(query)
+      : await browseBooks(query);
 
     return response.status(200).json(result);
   } catch (error) {
-    return next(error);
+    return response.status(400).json({
+      message: error.message || 'Invalid catalogue query'
+    });
   }
 });
 
