@@ -79,4 +79,3 @@ bookSchema.index({ category: 1, active: 1 });
 
 export const Book =
   mongoose.models.Book ||
-  mongoose.model('Book', bookSchema);
