@@ -34,3 +34,37 @@ export async function browseBooks({
     },
   };
 }
+
+export function toCategory(category) {
+  if (!category) return null;
+
+  const data =
+    typeof category.toObject === 'function'
+      ? category.toObject()
+      : category;
+
+  return {
+    ...data,
+    id: String(data._id ?? data.id),
+  };
+}
+
+export function toBook(book) {
+  if (!book) return null;
+
+  const data =
+    typeof book.toObject === 'function'
+      ? book.toObject()
+      : book;
+
+  return {
+    ...data,
+    id: String(data._id ?? data.id),
+    category:
+      data.category &&
+      typeof data.category === 'object' &&
+      (data.category._id || data.category.id)
+        ? toCategory(data.category)
+        : data.category,
+  };
+}

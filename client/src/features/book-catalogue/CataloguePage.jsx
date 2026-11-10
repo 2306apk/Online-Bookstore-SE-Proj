@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import BookCard from './BookCard.jsx';
+import { BookCard } from './BookCard.jsx';
 
 const EMPTY_SEARCH = {
   q: '',
@@ -7,7 +7,7 @@ const EMPTY_SEARCH = {
   keyword: ''
 };
 
-export default function CataloguePage() {
+export function CataloguePage() {
   const [searchInput, setSearchInput] = useState(EMPTY_SEARCH);
   const [search, setSearch] = useState(EMPTY_SEARCH);
   const [page, setPage] = useState(1);
