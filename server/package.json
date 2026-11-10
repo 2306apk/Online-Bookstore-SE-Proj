@@ -7,7 +7,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "seed": "node src/seed.js",
-    "test": "node --test --test-reporter=spec test/**/*.test.js",
+    "test": "node --test --test-concurrency=1 --test-reporter=spec test/**/*.test.js",
     "performance": "node ../load/catalogue-p90.mjs"
   },
   "dependencies": {

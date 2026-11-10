@@ -73,6 +73,7 @@ export function validateBrowseQuery(query) {
   };
 }
 import { Book } from './models/Book.js';
+import { toBook } from './service.js';
 
 export function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -158,7 +159,7 @@ export async function searchBooks({
   ]);
 
   return {
-    books,
+    books: books.map(toBook),
     pagination: {
       page,
       limit,

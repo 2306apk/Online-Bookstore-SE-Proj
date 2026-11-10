@@ -45,8 +45,12 @@ async function createAdmin() {
 }
 
 before(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  if (process.env.MONGODB_URI) {
+    await mongoose.connect(process.env.MONGODB_URI);
+  } else {
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri());
+  }
 });
 
 beforeEach(async () => {
@@ -88,7 +92,9 @@ beforeEach(async () => {
 
 after(async () => {
   await mongoose.disconnect();
-  await mongo.stop();
+  if (mongo) {
+    await mongo.stop();
+  }
 });
 
 describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () => {
