@@ -25,7 +25,7 @@ export async function browseBooks({
   ]);
 
   return {
-    books,
+    books: books.map(toBook),
     pagination: {
       page,
       limit,
@@ -60,6 +60,7 @@ export function toBook(book) {
   return {
     ...data,
     id: String(data._id ?? data.id),
+    available: Boolean(data.active && Number(data.stock) > 0),
     category:
       data.category &&
       typeof data.category === 'object' &&
