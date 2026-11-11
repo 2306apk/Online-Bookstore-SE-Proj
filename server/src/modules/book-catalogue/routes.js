@@ -1,9 +1,66 @@
+
 import { Router } from 'express';
-import { browseBooks } from './service.js';
+import { browseBooks, toCategory } from './service.js';
 import { searchBooks } from './search.js';
 import { validateBrowseQuery } from './schemas.js';
+import { Category } from './models/Category.js';
+import { Book } from './models/Book.js';
 
 const router = Router();
+
+router.get('/categories', async (request, response) => {
+  try {
+    const categories = await Category.find({ active: true })
+      .select('name slug')
+      .sort({ name: 1 })
+      .lean()
+      .exec();
+
+    return response.status(200).json({
+      categories: categories.map(toCategory)
+    });
+  } catch {
+    return response.status(500).json({
+      message: 'Unable to load categories'
+    });
+  }
+});
+
+router.get('/filters', async (request, response) => {
+  try {
+    const [categories, priceData] = await Promise.all([
+      Category.find({ active: true })
+        .select('name slug')
+        .sort({ name: 1 })
+        .lean()
+        .exec(),
+
+      Book.aggregate([
+        { $match: { active: true } },
+        {
+          $group: {
+            _id: null,
+            min: { $min: '$price' },
+            max: { $max: '$price' }
+          }
+        }
+      ])
+    ]);
+
+    const priceRange = priceData.length > 0
+      ? { min: priceData[0].min, max: priceData[0].max }
+      : { min: 0, max: 0 };
+
+    return response.status(200).json({
+      categories: categories.map(toCategory),
+      priceRange
+    });
+  } catch {
+    return response.status(500).json({
+      message: 'Unable to load catalogue filters'
+    });
+  }
+});
 
 router.get('/', async (request, response) => {
   try {

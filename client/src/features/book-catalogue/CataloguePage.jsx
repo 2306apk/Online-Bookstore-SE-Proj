@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { BookCard } from './BookCard.jsx';
 
 const EMPTY_SEARCH = {
@@ -7,18 +8,89 @@ const EMPTY_SEARCH = {
   keyword: ''
 };
 
+const EMPTY_PAGINATION = {
+  page: 1,
+  pages: 1,
+  total: 0
+};
+
 export function CataloguePage() {
-  const [searchInput, setSearchInput] = useState(EMPTY_SEARCH);
-  const [search, setSearch] = useState(EMPTY_SEARCH);
-  const [page, setPage] = useState(1);
-  const [books, setBooks] = useState([]);
-  const [pagination, setPagination] = useState({
-    page: 1,
-    pages: 1,
-    total: 0
+  const [searchParams, setSearchParams] = useSearchParams();
+  const queryString = searchParams.toString();
+
+  const page = Math.max(1, Number(searchParams.get('page')) || 1);
+  const category = searchParams.get('category') || '';
+  const inStock = searchParams.get('inStock') === 'true';
+
+  const [searchInput, setSearchInput] = useState({
+    q: searchParams.get('q') || '',
+    author: searchParams.get('author') || '',
+    keyword: searchParams.get('keyword') || ''
   });
+
+  const [books, setBooks] = useState([]);
+  const [pagination, setPagination] = useState(EMPTY_PAGINATION);
+  const [categories, setCategories] = useState([]);
+  const [priceRange, setPriceRange] = useState({ min: 0, max: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [filterError, setFilterError] = useState('');
+
+  const minimumPrice = Number(
+    searchParams.get('minPrice') ?? priceRange.min
+  );
+  const maximumPrice = Number(
+    searchParams.get('maxPrice') ?? priceRange.max
+  );
+
+  function updateParams(updates, resetPage = true) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === undefined || value === '') {
+          next.delete(key);
+        } else {
+          next.set(key, String(value));
+        }
+      });
+
+      if (resetPage) {
+        next.delete('page');
+      }
+
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadFilters() {
+      try {
+        const response = await fetch('/api/books/filters', {
+          signal: controller.signal
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.message || 'Unable to load filters');
+        }
+
+        setCategories(data.categories || []);
+        setPriceRange(data.priceRange || { min: 0, max: 0 });
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setFilterError(err.message || 'Unable to load catalogue filters');
+        }
+      }
+    }
+
+    loadFilters();
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -28,16 +100,9 @@ export function CataloguePage() {
       setError('');
 
       try {
-        const params = new URLSearchParams({
-          page: String(page),
-          limit: '12'
-        });
-
-        Object.entries(search).forEach(([key, value]) => {
-          if (value.trim()) {
-            params.set(key, value.trim());
-          }
-        });
+        const params = new URLSearchParams(queryString);
+        params.set('page', String(page));
+        params.set('limit', '12');
 
         const response = await fetch(`/api/books?${params.toString()}`, {
           signal: controller.signal
@@ -50,11 +115,7 @@ export function CataloguePage() {
         }
 
         setBooks(data.books || []);
-        setPagination(data.pagination || {
-          page: 1,
-          pages: 1,
-          total: 0
-        });
+        setPagination(data.pagination || EMPTY_PAGINATION);
       } catch (err) {
         if (err.name !== 'AbortError') {
           setError(err.message || 'Something went wrong');
@@ -69,7 +130,15 @@ export function CataloguePage() {
     loadBooks();
 
     return () => controller.abort();
-  }, [search, page]);
+  }, [queryString, page]);
+
+  useEffect(() => {
+    setSearchInput({
+      q: searchParams.get('q') || '',
+      author: searchParams.get('author') || '',
+      keyword: searchParams.get('keyword') || ''
+    });
+  }, [queryString]);
 
   function handleInputChange(event) {
     const { name, value } = event.target;
@@ -82,19 +151,71 @@ export function CataloguePage() {
 
   function handleSearch(event) {
     event.preventDefault();
-    setPage(1);
 
-    setSearch({
+    updateParams({
       q: searchInput.q.trim(),
       author: searchInput.author.trim(),
       keyword: searchInput.keyword.trim()
     });
   }
 
-  function handleClear() {
+  function handleClearSearch() {
     setSearchInput(EMPTY_SEARCH);
-    setSearch(EMPTY_SEARCH);
-    setPage(1);
+
+    updateParams({
+      q: null,
+      author: null,
+      keyword: null
+    });
+  }
+
+  function handleClearFilters() {
+    updateParams({
+      category: null,
+      minPrice: null,
+      maxPrice: null,
+      inStock: null
+    });
+  }
+
+  function handleMinimumPriceChange(event) {
+    const value = Number(event.target.value);
+
+    updateParams({
+      minPrice: value <= priceRange.min ? null : value,
+      maxPrice: value > maximumPrice ? value : (
+        searchParams.get('maxPrice') || null
+      )
+    });
+  }
+
+  function handleMaximumPriceChange(event) {
+    const value = Number(event.target.value);
+
+    updateParams({
+      maxPrice: value >= priceRange.max ? null : value,
+      minPrice: value < minimumPrice ? value : (
+        searchParams.get('minPrice') || null
+      )
+    });
+  }
+
+  function handleCategoryChange(event) {
+    updateParams({ category: event.target.value });
+  }
+
+  function handleStockChange(event) {
+    updateParams({
+      inStock: event.target.checked ? 'true' : null
+    });
+  }
+
+  function handlePageChange(nextPage) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('page', String(nextPage));
+      return next;
+    });
   }
 
   return (
@@ -143,11 +264,88 @@ export function CataloguePage() {
 
         <div className="search-actions">
           <button type="submit">Search Books</button>
-          <button type="button" className="clear-search" onClick={handleClear}>
-            Clear
+          <button
+            type="button"
+            className="clear-search"
+            onClick={handleClearSearch}
+          >
+            Clear Search
           </button>
         </div>
       </form>
+
+      <section className="catalogue-filters" aria-label="Catalogue filters">
+        <div className="search-field">
+          <label htmlFor="book-category">Category</label>
+          <select
+            id="book-category"
+            value={category}
+            onChange={handleCategoryChange}
+          >
+            <option value="">All categories</option>
+            {categories.map((item) => (
+              <option key={item.id || item._id} value={item.id || item._id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="price-filter">
+          <label>Price range</label>
+
+          <div className="price-values">
+            <span>Minimum: {minimumPrice.toFixed(2)}</span>
+            <span>Maximum: {maximumPrice.toFixed(2)}</span>
+          </div>
+
+          <label htmlFor="minimum-price">Minimum price</label>
+          <input
+            id="minimum-price"
+            type="range"
+            min={priceRange.min}
+            max={maximumPrice}
+            step="0.01"
+            value={minimumPrice}
+            disabled={priceRange.min === priceRange.max}
+            onChange={handleMinimumPriceChange}
+          />
+
+          <label htmlFor="maximum-price">Maximum price</label>
+          <input
+            id="maximum-price"
+            type="range"
+            min={minimumPrice}
+            max={priceRange.max}
+            step="0.01"
+            value={maximumPrice}
+            disabled={priceRange.min === priceRange.max}
+            onChange={handleMaximumPriceChange}
+          />
+        </div>
+
+        <label className="stock-filter" htmlFor="in-stock-only">
+          <input
+            id="in-stock-only"
+            type="checkbox"
+            checked={inStock}
+            onChange={handleStockChange}
+          />
+          In Stock Only
+        </label>
+
+        <button
+          type="button"
+          className="clear-search"
+          onClick={handleClearFilters}
+        >
+          Clear Filters
+        </button>
+
+        {filterError && (
+          <p className="catalogue-error" role="alert">{filterError}</p>
+        )}
+      </section>
 
       <section aria-live="polite">
         {loading && <p>Loading books...</p>}
@@ -164,7 +362,7 @@ export function CataloguePage() {
 
             {books.length === 0 ? (
               <p className="catalogue-empty">
-                No books found. Try changing your search.
+                No books found. Try changing your search or filters.
               </p>
             ) : (
               <div className="book-grid">
@@ -175,11 +373,14 @@ export function CataloguePage() {
             )}
 
             {pagination.pages > 1 && (
-              <nav className="catalogue-pagination" aria-label="Catalogue pages">
+              <nav
+                className="catalogue-pagination"
+                aria-label="Catalogue pages"
+              >
                 <button
                   type="button"
                   disabled={page <= 1}
-                  onClick={() => setPage((current) => current - 1)}
+                  onClick={() => handlePageChange(page - 1)}
                 >
                   Previous
                 </button>
@@ -191,7 +392,7 @@ export function CataloguePage() {
                 <button
                   type="button"
                   disabled={page >= pagination.pages}
-                  onClick={() => setPage((current) => current + 1)}
+                  onClick={() => handlePageChange(page + 1)}
                 >
                   Next
                 </button>

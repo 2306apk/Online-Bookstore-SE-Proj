@@ -1,20 +1,22 @@
+
 import mongoose from 'mongoose';
+
 const ALLOWED_PARAMETERS = new Set([
   'page',
   'limit',
   'category',
   'q',
   'author',
-  'keyword'
+  'keyword',
+  'minPrice',
+  'maxPrice',
+  'inStock'
 ]);
 
 function parsePositiveInteger(value, name, defaultValue, maxValue) {
   if (value === undefined) return defaultValue;
 
-  if (
-    typeof value !== 'string' ||
-    !/^\d+$/.test(value)
-  ) {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
     throw new Error(`${name} must be a positive integer`);
   }
 
@@ -47,6 +49,34 @@ function parseSearchText(value, name) {
   return parsed;
 }
 
+function parsePrice(value, name) {
+  if (value === undefined) return undefined;
+
+  if (
+    typeof value !== 'string' ||
+    !/^\d+(?:\.\d{1,2})?$/.test(value)
+  ) {
+    throw new Error(`${name} must be a valid non-negative price`);
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${name} must be a valid non-negative price`);
+  }
+
+  return parsed;
+}
+
+function parseBoolean(value, name) {
+  if (value === undefined) return false;
+
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+
+  throw new Error(`${name} must be true or false`);
+}
+
 export function validateBrowseQuery(query) {
   for (const key of Object.keys(query)) {
     if (!ALLOWED_PARAMETERS.has(key)) {
@@ -67,12 +97,27 @@ export function validateBrowseQuery(query) {
     throw new Error('category must be a valid identifier');
   }
 
+  const minPrice = parsePrice(query.minPrice, 'minPrice');
+  const maxPrice = parsePrice(query.maxPrice, 'maxPrice');
+  const inStock = parseBoolean(query.inStock, 'inStock');
+
+  if (
+    minPrice !== undefined &&
+    maxPrice !== undefined &&
+    minPrice > maxPrice
+  ) {
+    throw new Error('minPrice cannot be greater than maxPrice');
+  }
+
   return {
     page,
     limit,
     category: query.category?.trim(),
     q: parseSearchText(query.q, 'q'),
     author: parseSearchText(query.author, 'author'),
-    keyword: parseSearchText(query.keyword, 'keyword')
+    keyword: parseSearchText(query.keyword, 'keyword'),
+    minPrice,
+    maxPrice,
+    inStock
   };
 }
