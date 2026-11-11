@@ -174,7 +174,7 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
     assert.equal(escaped.body.books.length, 0);
     const unsafeQuery = await request(app).get('/api/books?q[$ne]=anything');
     assert.equal(unsafeQuery.status, 400);
-
+  });
   test('filters active books by minimum and maximum price', async () => {
     const minimum = await request(app).get('/api/books?minPrice=20');
     assert.equal(minimum.status, 200);
@@ -251,7 +251,6 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
     const invalidRange = await request(app).get('/api/books?minPrice=100&maxPrice=50');
     assert.equal(invalidRange.status, 400);
   });
- });
 });
 
 describe('TC-CART-01, TC-CART-02 and TC-SEC-03: customer cart', () => {
