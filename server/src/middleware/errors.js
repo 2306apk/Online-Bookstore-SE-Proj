@@ -121,5 +121,11 @@ export function errorHandler(error, request, response, next) {
     ? 'INTERNAL_ERROR'
     : (error?.code || 'REQUEST_ERROR');
 
-  return sendError(response, statusCode, code, message, error?.details);
+  return sendError(
+    response,
+    statusCode,
+    code,
+    message,
+    isServerFault ? undefined : error?.details
+  );
 }

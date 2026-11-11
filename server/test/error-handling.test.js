@@ -139,6 +139,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
     const testApp = express();
     testApp.get('/test-internal-crash', (req, res, next) => {
       const internalErr = new Error('FATAL: MongoConnectionPoolClosedException: user=root password=secretPass host=10.0.0.1');
+      internalErr.details = { dbHost: '10.0.0.1', internalQuery: 'SELECT * FROM credentials' };
       next(internalErr);
     });
     testApp.use(errorHandler);
@@ -154,10 +155,12 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
       },
     });
 
-    // Verify stack traces and credentials are never leaked
+    // Verify stack traces, internal details, and credentials are never leaked
     assert.equal(response.body.error?.stack, undefined);
+    assert.equal(response.body.error?.details, undefined);
     assert.equal(response.body.stack, undefined);
     assert.equal(JSON.stringify(response.body).includes('secretPass'), false);
+    assert.equal(JSON.stringify(response.body).includes('credentials'), false);
     assert.equal(JSON.stringify(response.body).includes('MongoConnectionPoolClosedException'), false);
   });
 });
