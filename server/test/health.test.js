@@ -42,15 +42,30 @@ describe('OBS-24: System Availability and Health Monitoring', () => {
     }
   });
 
-  test('does not expose database credentials or connection details', async () => {
-    const response = await request(app).get('/api/health');
 
-    assert.equal(response.body.database, 'disconnected');
-    assert.deepEqual(Object.keys(response.body).sort(), [
-      'database',
-      'status',
-    ]);
-    assert.equal(JSON.stringify(response.body).includes('mongodb://'), false);
-    assert.equal(JSON.stringify(response.body).includes('password'), false);
+  test('does not expose database credentials or connection details', async () => {
+    const originalReadyState = mongoose.connection.readyState;
+
+    try {
+      mongoose.connection.readyState = 0;
+
+      const response = await request(app).get('/api/health');
+
+      assert.equal(response.status, 503);
+      assert.equal(response.body.status, 'unavailable');
+      assert.equal(response.body.database, 'disconnected');
+
+      assert.deepEqual(Object.keys(response.body).sort(), [
+        'database',
+        'status',
+      ]);
+
+      const responseText = JSON.stringify(response.body);
+
+      assert.equal(responseText.includes('mongodb://'), false);
+      assert.equal(responseText.includes('password'), false);
+    } finally {
+      mongoose.connection.readyState = originalReadyState;
+    }
   });
-});
+ });

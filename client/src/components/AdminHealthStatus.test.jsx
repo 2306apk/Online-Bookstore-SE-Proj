@@ -1,6 +1,6 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { AdminHealthStatus } from './AdminHealthStatus.jsx';
 import { apiFetch } from '../api/client.js';
 
@@ -19,7 +19,7 @@ describe('OBS-24: Admin Health Status Widget', () => {
 
     render(<AdminHealthStatus />);
 
-    expect(screen.getByText('Checking system health…')).toBeInTheDocument();
+    expect(screen.getByText('Checking system health...')).toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith('/health');
   });
 
@@ -73,5 +73,34 @@ describe('OBS-24: Admin Health Status Widget', () => {
     expect(await screen.findByText('System healthy')).toBeInTheDocument();
     expect(screen.queryByText(/mongodb:\/\//)).not.toBeInTheDocument();
     expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
+  });
+
+  it('refreshes health status when the admin clicks Refresh', async () => {
+    apiFetch
+      .mockResolvedValueOnce({
+        status: 'ok',
+        database: 'connected',
+      })
+      .mockRejectedValueOnce({
+        status: 503,
+        message: 'Service unavailable',
+      });
+
+    render(<AdminHealthStatus />);
+
+    expect(await screen.findByText('System healthy')).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Refresh system health' })
+    );
+
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+    expect(apiFetch).toHaveBeenLastCalledWith('/health');
+
+    expect(
+      await screen.findByText('Database unavailable')
+    ).toBeInTheDocument();
+
+    expect(screen.getByText('Database disconnected')).toBeInTheDocument();
   });
 });

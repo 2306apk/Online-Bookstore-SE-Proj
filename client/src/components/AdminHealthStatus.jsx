@@ -1,64 +1,85 @@
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../api/client.js';
 
 export function AdminHealthStatus() {
   const [health, setHealth] = useState({
     state: 'loading',
-    message: 'Checking system health…',
+    message: 'Checking system health...',
     database: null,
   });
+  const [checking, setChecking] = useState(true);
+  const mounted = useRef(false);
+  const requestId = useRef(0);
+  const inFlight = useRef(false);
 
-  useEffect(() => {
-    let active = true;
+  const checkHealth = useCallback(async () => {
+    if (inFlight.current) return;
 
-    async function checkHealth() {
-      try {
-        const result = await apiFetch('/health');
+    inFlight.current = true;
+    const currentRequest = ++requestId.current;
 
-        if (!active) return;
+    setChecking(true);
+    setHealth({
+      state: 'loading',
+      message: 'Checking system health...',
+      database: null,
+    });
 
-        if (result.status === 'ok' && result.database === 'connected') {
-          setHealth({
-            state: 'healthy',
-            message: 'System healthy',
-            database: 'Database connected',
-          });
-        } else {
-          setHealth({
-            state: 'unavailable',
-            message: 'Database unavailable',
-            database: 'Database disconnected',
-          });
-        }
-      } catch (error) {
-        if (!active) return;
+    try {
+      const result = await apiFetch('/health');
 
-        if (error.status === 503) {
-          setHealth({
-            state: 'unavailable',
-            message: 'Database unavailable',
-            database: 'Database disconnected',
-          });
-        } else {
-          setHealth({
-            state: 'error',
-            message: 'Unable to check system health',
-            database: null,
-          });
-        }
+      if (!mounted.current || currentRequest !== requestId.current) return;
+
+      if (result.status === 'ok' && result.database === 'connected') {
+        setHealth({
+          state: 'healthy',
+          message: 'System healthy',
+          database: 'Database connected',
+        });
+      } else {
+        setHealth({
+          state: 'unavailable',
+          message: 'Database unavailable',
+          database: 'Database disconnected',
+        });
+      }
+    } catch (error) {
+      if (!mounted.current || currentRequest !== requestId.current) return;
+
+      if (error.status === 503) {
+        setHealth({
+          state: 'unavailable',
+          message: 'Database unavailable',
+          database: 'Database disconnected',
+        });
+      } else {
+        setHealth({
+          state: 'error',
+          message: 'Unable to check system health',
+          database: null,
+        });
+      }
+    } finally {
+      inFlight.current = false;
+      if (mounted.current && currentRequest === requestId.current) {
+        setChecking(false);
       }
     }
+  }, []);
 
+  useEffect(() => {
+    mounted.current = true;
     checkHealth();
 
     return () => {
-      active = false;
+      mounted.current = false;
+      requestId.current += 1;
     };
-  }, []);
+  }, [checkHealth]);
 
   const indicator = {
-    loading: '⏳',
+    loading: '...',
     healthy: '●',
     unavailable: '●',
     error: '!',
@@ -82,9 +103,27 @@ export function AdminHealthStatus() {
         background: 'var(--card, #fffdf8)',
       }}
     >
-      <h2 style={{ marginTop: 0, fontSize: '1.15rem' }}>
-        System Health
-      </h2>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: '12px',
+        }}
+      >
+        <h2 style={{ marginTop: 0, fontSize: '1.15rem' }}>
+          System Health
+        </h2>
+
+        <button
+          type="button"
+          onClick={checkHealth}
+          disabled={checking}
+          aria-label="Refresh system health"
+        >
+          {checking ? 'Checking...' : 'Refresh status'}
+        </button>
+      </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
         <span aria-hidden="true" style={{ color: indicatorColor }}>
