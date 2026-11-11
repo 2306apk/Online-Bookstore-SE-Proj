@@ -18,6 +18,24 @@ export function notFoundHandler(request, response, next) {
   next(new AppError(404, 'The requested resource was not found.', 'NOT_FOUND'));
 }
 
+/**
+ * Uniform error envelope helper: guarantees exactly one top-level "error" key.
+ */
+function sendError(response, statusCode, code, message, details) {
+  const errorPayload = {
+    code,
+    message,
+    ...(details !== undefined ? { details } : {}),
+  };
+
+  // Strictly ensure stack traces and internal fields are never exposed
+  delete errorPayload.stack;
+
+  return response.status(statusCode).json({
+    error: errorPayload,
+  });
+}
+
 export function errorHandler(error, request, response, next) {
   if (response.headersSent) {
     next(error);
@@ -26,14 +44,12 @@ export function errorHandler(error, request, response, next) {
 
   // 1. Handle JSON parsing errors from express.json()
   if (error instanceof SyntaxError && error.status === 400 && 'body' in error) {
-    const errorPayload = {
-      code: 'INVALID_JSON',
-      message: 'The request payload contains malformed JSON.',
-    };
-    response.status(400).json({
-      error: errorPayload,
-    });
-    return;
+    return sendError(
+      response,
+      400,
+      'INVALID_JSON',
+      'The request payload contains malformed JSON.'
+    );
   }
 
   // 2. Handle Zod validation errors
@@ -41,15 +57,13 @@ export function errorHandler(error, request, response, next) {
     const details = typeof error.flatten === 'function'
       ? error.flatten().fieldErrors
       : error.errors;
-    const errorPayload = {
-      code: 'VALIDATION_ERROR',
-      message: 'Please correct the highlighted fields.',
-      ...(details ? { details } : {}),
-    };
-    response.status(400).json({
-      error: errorPayload,
-    });
-    return;
+    return sendError(
+      response,
+      400,
+      'VALIDATION_ERROR',
+      'Please correct the highlighted fields.',
+      details
+    );
   }
 
   // 3. Handle Mongoose Validation Errors
@@ -59,39 +73,33 @@ export function errorHandler(error, request, response, next) {
           Object.entries(error.errors).map(([field, err]) => [field, [err.message]])
         )
       : undefined;
-    const errorPayload = {
-      code: 'VALIDATION_ERROR',
-      message: 'The submitted data is invalid.',
-      ...(details ? { details } : {}),
-    };
-    response.status(400).json({
-      error: errorPayload,
-    });
-    return;
+    return sendError(
+      response,
+      400,
+      'VALIDATION_ERROR',
+      'The submitted data is invalid.',
+      details
+    );
   }
 
   // 4. Handle Mongoose CastError (e.g. invalid MongoDB ObjectId)
   if (error?.name === 'CastError') {
-    const errorPayload = {
-      code: 'INVALID_IDENTIFIER',
-      message: `Invalid format for identifier '${error.path || 'id'}'.`,
-    };
-    response.status(400).json({
-      error: errorPayload,
-    });
-    return;
+    return sendError(
+      response,
+      400,
+      'INVALID_IDENTIFIER',
+      `Invalid format for identifier '${error.path || 'id'}'.`
+    );
   }
 
   // 5. Handle MongoDB Duplicate Key Error (E11000)
   if (error?.code === 11000) {
-    const errorPayload = {
-      code: 'DUPLICATE_RESOURCE',
-      message: 'A resource with those details already exists.',
-    };
-    response.status(409).json({
-      error: errorPayload,
-    });
-    return;
+    return sendError(
+      response,
+      409,
+      'DUPLICATE_RESOURCE',
+      'A resource with those details already exists.'
+    );
   }
 
   // 6. Handle Known Operational Application Errors vs Unexpected Server Faults
@@ -113,16 +121,5 @@ export function errorHandler(error, request, response, next) {
     ? 'INTERNAL_ERROR'
     : (error?.code || 'REQUEST_ERROR');
 
-  const errorPayload = {
-    code,
-    message,
-    ...(error?.details ? { details: error.details } : {}),
-  };
-
-  // Strictly ensure no stack or internal details are attached to the payload
-  delete errorPayload.stack;
-
-  response.status(statusCode).json({
-    error: errorPayload,
-  });
+  return sendError(response, statusCode, code, message, error?.details);
 }
