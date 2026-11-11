@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 const ALLOWED_PARAMETERS = new Set([
   'page',
   'limit',
@@ -58,9 +59,12 @@ export function validateBrowseQuery(query) {
 
   if (
     query.category !== undefined &&
-    (typeof query.category !== 'string' || !query.category.trim())
+    (
+      typeof query.category !== 'string' ||
+      !mongoose.isValidObjectId(query.category)
+    )
   ) {
-    throw new Error('category must be a non-empty string');
+    throw new Error('category must be a valid identifier');
   }
 
   return {
