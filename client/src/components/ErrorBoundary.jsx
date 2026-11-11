@@ -11,8 +11,11 @@ export class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, errorInfo) {
-    // In production, errors are logged securely without leaking secrets to users
-    console.error('Unhandled React application error caught by ErrorBoundary:', error, errorInfo);
+    if (import.meta.env?.DEV) {
+      console.error('React application error caught by ErrorBoundary:', error, errorInfo);
+    } else {
+      console.error('An unexpected UI error occurred.');
+    }
   }
 
   handleReset = () => {
@@ -68,7 +71,7 @@ export class ErrorBoundary extends Component {
                 We encountered an unexpected error
               </h1>
               <p className="muted" style={{ margin: '0 0 24px' }}>
-                The page could not be displayed properly. Our system has logged the issue, and no private data was compromised.
+                The page could not be displayed properly. Please try reloading the page or return to the catalogue.
               </p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
                 <button
@@ -102,4 +105,3 @@ export class ErrorBoundary extends Component {
     return this.props.children;
   }
 }
-

@@ -10,6 +10,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
   test('returns 404 with NOT_FOUND envelope for unknown endpoints', async () => {
     const response = await request(app).get('/api/unknown-endpoint-xyz');
     assert.equal(response.status, 404);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.deepEqual(response.body, {
       error: {
         code: 'NOT_FOUND',
@@ -25,6 +26,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
       .send('{ "email": "broken-json, ');
 
     assert.equal(response.status, 400);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.equal(response.body.error?.code, 'INVALID_JSON');
     assert.equal(response.body.error?.message, 'The request payload contains malformed JSON.');
     assert.equal(response.body.error?.stack, undefined);
@@ -36,6 +38,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
       .send({ email: 'not-an-email', password: '123' });
 
     assert.equal(response.status, 400);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.equal(response.body.error?.code, 'VALIDATION_ERROR');
     assert.ok(response.body.error?.details);
     assert.equal(response.body.error?.stack, undefined);
@@ -51,6 +54,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
 
     const response = await request(testApp).get('/test-app-error');
     assert.equal(response.status, 402);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.deepEqual(response.body, {
       error: {
         code: 'PAYMENT_REQUIRED',
@@ -72,6 +76,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
 
     const response = await request(testApp).get('/test-cast-error');
     assert.equal(response.status, 400);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.deepEqual(response.body, {
       error: {
         code: 'INVALID_IDENTIFIER',
@@ -95,6 +100,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
 
     const response = await request(testApp).get('/test-mongoose-validation');
     assert.equal(response.status, 400);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.equal(response.body.error?.code, 'VALIDATION_ERROR');
     assert.equal(response.body.error?.message, 'The submitted data is invalid.');
     assert.deepEqual(response.body.error?.details, {
@@ -114,6 +120,7 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
 
     const response = await request(testApp).get('/test-internal-crash');
     assert.equal(response.status, 500);
+    assert.deepEqual(Object.keys(response.body), ['error']);
     assert.deepEqual(response.body, {
       error: {
         code: 'INTERNAL_ERROR',
@@ -128,4 +135,3 @@ describe('OBS-31 / OBS-NF-005: Global Error Handling and Sanitization', () => {
     assert.equal(JSON.stringify(response.body).includes('MongoConnectionPoolClosedException'), false);
   });
 });
-
