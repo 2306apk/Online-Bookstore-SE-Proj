@@ -1,15 +1,51 @@
+
 import { Book } from './models/Book.js';
 
-export async function browseBooks({
-  page = 1,
-  limit = 20,
+export function buildCatalogueFilter({
   category,
+  minPrice,
+  maxPrice,
+  inStock
 } = {}) {
   const filter = { active: true };
 
   if (category) {
     filter.category = category;
   }
+
+  if (minPrice !== undefined || maxPrice !== undefined) {
+    filter.price = {};
+
+    if (minPrice !== undefined) {
+      filter.price.$gte = minPrice;
+    }
+
+    if (maxPrice !== undefined) {
+      filter.price.$lte = maxPrice;
+    }
+  }
+
+  if (inStock) {
+    filter.stock = { $gt: 0 };
+  }
+
+  return filter;
+}
+
+export async function browseBooks({
+  page = 1,
+  limit = 20,
+  category,
+  minPrice,
+  maxPrice,
+  inStock
+} = {}) {
+  const filter = buildCatalogueFilter({
+    category,
+    minPrice,
+    maxPrice,
+    inStock
+  });
 
   const skip = (page - 1) * limit;
 
@@ -21,7 +57,7 @@ export async function browseBooks({
       .limit(limit)
       .exec(),
 
-    Book.countDocuments(filter),
+    Book.countDocuments(filter)
   ]);
 
   return {
@@ -30,8 +66,8 @@ export async function browseBooks({
       page,
       limit,
       total,
-      pages: Math.ceil(total / limit),
-    },
+      pages: Math.ceil(total / limit)
+    }
   };
 }
 
@@ -45,7 +81,7 @@ export function toCategory(category) {
 
   return {
     ...data,
-    id: String(data._id ?? data.id),
+    id: String(data._id ?? data.id)
   };
 }
 
@@ -66,6 +102,6 @@ export function toBook(book) {
       typeof data.category === 'object' &&
       (data.category._id || data.category.id)
         ? toCategory(data.category)
-        : data.category,
+        : data.category
   };
 }

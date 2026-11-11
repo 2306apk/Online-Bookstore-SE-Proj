@@ -174,7 +174,84 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
     assert.equal(escaped.body.books.length, 0);
     const unsafeQuery = await request(app).get('/api/books?q[$ne]=anything');
     assert.equal(unsafeQuery.status, 400);
+
+  test('filters active books by minimum and maximum price', async () => {
+    const minimum = await request(app).get('/api/books?minPrice=20');
+    assert.equal(minimum.status, 200);
+    assert.deepEqual(
+      minimum.body.books.map((book) => book.title),
+      ['Reliable Systems']
+    );
+
+    const maximum = await request(app).get('/api/books?maxPrice=20');
+    assert.equal(maximum.status, 200);
+    assert.deepEqual(
+      maximum.body.books.map((book) => book.title),
+      ['Empty Shelf']
+    );
+
+    const range = await request(app).get('/api/books?minPrice=18&maxPrice=25');
+    assert.equal(range.status, 200);
+    assert.equal(range.body.pagination.total, 2);
   });
+
+  test('filters out-of-stock books when inStock is true', async () => {
+    const response = await request(app).get('/api/books?inStock=true');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      response.body.books.map((book) => book.title),
+      ['Reliable Systems']
+    );
+  });
+
+  test('combines category, price, stock and text search filters', async () => {
+    const combined = await request(app)
+      .get(`/api/books?category=${category._id}&minPrice=20&maxPrice=30&inStock=true`);
+
+    assert.equal(combined.status, 200);
+    assert.equal(combined.body.pagination.total, 1);
+    assert.equal(combined.body.books[0].title, 'Reliable Systems');
+
+    const searched = await request(app)
+      .get('/api/books?q=reliable&minPrice=20&inStock=true');
+
+    assert.equal(searched.status, 200);
+    assert.equal(searched.body.pagination.total, 1);
+    assert.equal(searched.body.books[0].title, 'Reliable Systems');
+  });
+
+  test('returns only active categories from the public categories endpoint', async () => {
+    await Category.create({
+      name: 'Inactive Category',
+      slug: 'inactive-category',
+      active: false
+    });
+
+    const response = await request(app).get('/api/books/categories');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      response.body.categories.map((item) => item.name),
+      ['Technology']
+    );
+    assert.ok(response.body.categories[0].id);
+  });
+
+  test('returns HTTP 400 for invalid filter parameters', async () => {
+    const invalidMinimum = await request(app).get('/api/books?minPrice=-10');
+    assert.equal(invalidMinimum.status, 400);
+
+    const invalidMaximum = await request(app).get('/api/books?maxPrice=abc');
+    assert.equal(invalidMaximum.status, 400);
+
+    const invalidBoolean = await request(app).get('/api/books?inStock=yes');
+    assert.equal(invalidBoolean.status, 400);
+
+    const invalidRange = await request(app).get('/api/books?minPrice=100&maxPrice=50');
+    assert.equal(invalidRange.status, 400);
+  });
+ });
 });
 
 describe('TC-CART-01, TC-CART-02 and TC-SEC-03: customer cart', () => {
