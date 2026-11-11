@@ -8,6 +8,7 @@ import authenticationRoutes from './modules/authentication-security/routes.js';
 import administrationRoutes from './modules/administration-security/routes.js';
 import bookCatalogueRoutes from './modules/book-catalogue/routes.js';
 import shoppingRoutes from './modules/shopping-orders/routes.js';
+import { rejectUnsafeInput } from './middleware/sanitize.js';
 import mongoose from 'mongoose';
 
 const app = express();
@@ -16,12 +17,15 @@ app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin: config.clientOrigin, credentials: true }));
 app.use(express.json({ limit: '100kb' }));
+app.use(rejectUnsafeInput);
 app.use(cookieParser());
 
 app.get('/api/health', (request, response) => {
-  response.json({
-    status: 'ok',
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+  const isDatabaseConnected = mongoose.connection.readyState === 1;
+
+  return response.status(isDatabaseConnected ? 200 : 503).json({
+    status: isDatabaseConnected ? 'ok' : 'unavailable',
+    database: isDatabaseConnected ? 'connected' : 'disconnected',
   });
 });
 
