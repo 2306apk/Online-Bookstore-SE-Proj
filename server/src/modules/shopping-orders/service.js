@@ -3,6 +3,7 @@ import { AppError } from '../../middleware/errors.js';
 import { Book } from '../book-catalogue/models/Book.js';
 import { toBook } from '../book-catalogue/service.js';
 import { Cart } from './models/Cart.js';
+import { assertStrictObjectId } from './object-id.js';
 
 async function getCartDocument(userId) {
   let cart = await Cart.findOne({ user: userId });
@@ -110,4 +111,57 @@ export async function removeCartItem(userId, itemId) {
   cart.items.pull(itemId);
   await cart.save();
   return serializeCart(await populateCart(cart));
+}
+
+// Two first-time requests can both try to create the user's cart; the unique index lets one win.
+async function getOrCreateCart(userId) {
+  try {
+    return await getCartDocument(userId);
+  } catch (error) {
+    if (error?.code === 11000) {
+      const cart = await Cart.findOne({ user: userId });
+      if (cart) return cart;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Ensures the cart holds AT LEAST `quantity` copies of a book. This is not an increment:
+ * calling it again, or with the book already in the cart at a higher quantity, changes nothing.
+ * Used by wishlist "move to cart" so retries and simultaneous requests cannot add extra copies.
+ *
+ * Each attempt is a compare-and-swap on the cart's version (__v), so two simultaneous requests
+ * can never leave two cart rows for the same book or a doubled quantity.
+ */
+export async function ensureCartItem(userId, { bookId, quantity = 1 }) {
+  assertStrictObjectId(bookId, 'The book identifier is invalid.', 'INVALID_BOOK_ID');
+  const book = await findAvailableBook(bookId);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const cart = await getOrCreateCart(userId);
+    const items = cart.toObject().items;
+    const existing = items.find((item) => String(item.book) === String(book._id));
+
+    // Already satisfied: leave the cart exactly as it is (no stock check, no change).
+    if (existing && existing.quantity >= quantity) {
+      return serializeCart(await populateCart(cart));
+    }
+
+    assertStock(book, quantity);
+    const nextItems = existing
+      ? items.map((item) => (item === existing ? { ...item, quantity } : item))
+      : [...items, { book: book._id, quantity }];
+
+    const result = await Cart.updateOne(
+      { _id: cart._id, __v: cart.__v },
+      { $set: { items: nextItems }, $inc: { __v: 1 } },
+    );
+    if (result.modifiedCount === 1) {
+      return serializeCart(await populateCart(await getOrCreateCart(userId)));
+    }
+    // Someone else changed the cart first: re-read and decide again.
+  }
+
+  throw new AppError(409, 'The cart is busy. Please try again.', 'CART_BUSY');
 }
