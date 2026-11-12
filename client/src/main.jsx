@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { App } from './app/App.jsx';
 import { AuthProvider } from './app/AuthContext.jsx';
 import { CartProvider } from './app/CartContext.jsx';
+import { WishlistProvider } from './app/WishlistContext.jsx';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import './styles.css';
 
@@ -13,7 +14,9 @@ createRoot(document.getElementById('root')).render(
       <ErrorBoundary>
         <AuthProvider>
           <CartProvider>
-            <App />
+            <WishlistProvider>
+              <App />
+            </WishlistProvider>
           </CartProvider>
         </AuthProvider>
       </ErrorBoundary>

@@ -1,0 +1,15 @@
+.book-card { position: relative; }
+.wishlist-heart { position: absolute; top: 10px; right: 10px; z-index: 2; width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255, 253, 248, 0.92); color: var(--ink, #1f2a24); font-size: 1.2rem; line-height: 1; cursor: pointer; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+.wishlist-heart[aria-pressed='true'] { color: #c8614e; }
+.wishlist-heart:disabled { opacity: 0.6; cursor: wait; }
+.wishlist-page { padding-top: 10px; }
+.wishlist-list { border-top: 1px solid var(--ink, #1f2a24); }
+.wishlist-item { display: grid; grid-template-columns: 82px 1fr auto; gap: 19px; align-items: center; padding: 20px 0; border-bottom: 1px solid var(--line, #d8ded6); }
+.wishlist-item h2 { margin: 0; font: 600 1.15rem/1.2 'Playfair Display', serif; }
+.wishlist-item .book-author { margin: 5px 0 6px; }
+.wishlist-item-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.availability-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; }
+.availability-badge.in-stock { color: var(--teal-dark, #1f5c4a); background: #e0eee8; }
+.availability-badge.unavailable { color: #8f3e35; background: #fae9e3; }
+.wishlist-item.is-unavailable h2, .wishlist-item.is-unavailable .book-author { opacity: 0.65; }
+@media (max-width: 640px) { .wishlist-item { grid-template-columns: 64px 1fr; } .wishlist-item-actions { grid-column: 1 / -1; flex-direction: row; justify-content: flex-end; } }

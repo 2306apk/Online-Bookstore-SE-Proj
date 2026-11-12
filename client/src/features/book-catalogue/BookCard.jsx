@@ -1,6 +1,9 @@
+import { WishlistButton } from '../shopping-orders/WishlistButton.jsx';
+
 export function BookCard({ book }) {
   return (
     <article className="book-card">
+      <WishlistButton bookId={book.id} title={book.title} />
       {book.coverImage ? (
         <img
           src={book.coverImage}
