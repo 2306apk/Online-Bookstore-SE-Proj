@@ -1,10 +1,12 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../app/AuthContext.jsx';
 import { useCart } from '../app/CartContext.jsx';
+import { useOptionalWishlist } from '../app/WishlistContext.jsx';
 
 export function Layout() {
   const { user, logout } = useAuth();
   const { cart } = useCart();
+  const wishlist = useOptionalWishlist();
   const navigate = useNavigate();
 
   async function handleLogout() {
@@ -22,6 +24,11 @@ export function Layout() {
         <nav className="main-nav" aria-label="Main navigation">
           <NavLink to="/" end>Catalogue</NavLink>
           {user?.role === 'ADMIN' && <NavLink to="/admin">Admin desk</NavLink>}
+          {user?.role === 'CUSTOMER' && (
+            <NavLink to="/wishlist">
+              Wishlist {wishlist?.wishlist.count > 0 && <span className="cart-count">{wishlist.wishlist.count}</span>}
+            </NavLink>
+          )}
           {user?.role === 'CUSTOMER' && (
             <NavLink to="/cart" className="cart-link">
               Cart <span className="cart-count">{cart.itemCount}</span>
