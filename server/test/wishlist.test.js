@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, beforeEach, describe, test } from 'node:test';
+import { after, before, beforeEach, describe, mock, test } from 'node:test';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
@@ -243,14 +243,32 @@ describe('OBS-22: move to cart', () => {
     assert.equal(response.body.wishlist.count, 0);
   });
 
-  test('keeps an existing quantity even if stock has since dropped below it', async () => {
+  test('fails when the existing cart quantity exceeds current stock, leaving cart and wishlist untouched', async () => {
     const { agent } = await createCustomer();
     await agent.post('/api/cart').send({ bookId: String(book._id), quantity: 4 });
     await agent.post('/api/wishlist').send({ bookId: String(book._id) });
     await Book.updateOne({ _id: book._id }, { stock: 2 });
+
+    const response = await agent.post(`/api/wishlist/${book._id}/move-to-cart`);
+    assert.equal(response.status, 409);
+    assert.equal(response.body.error.code, 'INSUFFICIENT_STOCK');
+
+    const cart = (await agent.get('/api/cart')).body.cart;
+    assert.equal(cart.items.length, 1);
+    assert.equal(cart.items[0].quantity, 4, 'existing cart quantity is preserved');
+    const wishlist = (await agent.get('/api/wishlist')).body.wishlist;
+    assert.deepEqual(wishlist.bookIds, [String(book._id)], 'wishlist entry is left untouched');
+  });
+
+  test('an existing cart quantity equal to current stock still moves successfully', async () => {
+    const { agent } = await createCustomer();
+    await agent.post('/api/cart').send({ bookId: String(book._id), quantity: 4 });
+    await agent.post('/api/wishlist').send({ bookId: String(book._id) });
+    await Book.updateOne({ _id: book._id }, { stock: 4 });
     const response = await agent.post(`/api/wishlist/${book._id}/move-to-cart`);
     assert.equal(response.status, 200);
     assert.equal(response.body.cart.items[0].quantity, 4);
+    assert.equal(response.body.wishlist.count, 0);
   });
 
   test('a repeated move after success is 404 and changes nothing', async () => {
@@ -356,5 +374,120 @@ describe('OBS-22: move to cart', () => {
     assert.equal(raised.items[0].quantity, 4);
     const again = await ensureCartItem(user.id, { bookId: String(book._id), quantity: 4 });
     assert.equal(again.items[0].quantity, 4);
+  });
+});
+
+describe('OBS-22: hardening (concurrency and partial failure)', () => {
+  test('ensureCartItem rejects (409) when the cart already holds more than the stock and changes nothing', async () => {
+    const { agent, user } = await createCustomer();
+    await agent.post('/api/cart').send({ bookId: String(book._id), quantity: 4 });
+    await Book.updateOne({ _id: book._id }, { stock: 1 });
+    const before = await Cart.findOne({ user: user.id }).lean();
+    await assert.rejects(
+      () => ensureCartItem(user.id, { bookId: String(book._id), quantity: 1 }),
+      (error) => error.statusCode === 409 && error.code === 'INSUFFICIENT_STOCK',
+    );
+    const after = await Cart.findOne({ user: user.id }).lean();
+    assert.equal(after.__v, before.__v);
+    assert.equal(after.items[0].quantity, 4);
+  });
+
+  test('simultaneous first-time cart creation: one cart document, one row, quantity 1', async () => {
+    const { user } = await createCustomer();
+    assert.equal(await Cart.countDocuments({ user: user.id }), 0);
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => ensureCartItem(user.id, { bookId: String(book._id), quantity: 1 })),
+    );
+    for (const cart of results) {
+      assert.equal(cart.items.length, 1);
+      assert.equal(cart.items[0].quantity, 1);
+    }
+    assert.equal(await Cart.countDocuments({ user: user.id }), 1);
+    const stored = await Cart.findOne({ user: user.id }).lean();
+    assert.equal(stored.items.length, 1);
+    assert.equal(stored.items[0].quantity, 1);
+  });
+
+  test('simultaneous first-time creation with different books keeps every book exactly once', async () => {
+    const { user } = await createCustomer();
+    const third = await Book.create(makeBook({ title: 'Book Three', stock: 9 }));
+    await Promise.all([book, otherBook, third].map((item) => ensureCartItem(user.id, { bookId: String(item._id), quantity: 1 })));
+    assert.equal(await Cart.countDocuments({ user: user.id }), 1);
+    const stored = await Cart.findOne({ user: user.id }).lean();
+    assert.equal(stored.items.length, 3);
+    assert.deepEqual(stored.items.map((item) => item.quantity), [1, 1, 1]);
+  });
+
+  test('concurrent move requests for the same book never change an existing quantity of 2', async () => {
+    const { agent } = await createCustomer();
+    await agent.post('/api/cart').send({ bookId: String(book._id), quantity: 2 });
+    await agent.post('/api/wishlist').send({ bookId: String(book._id) });
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => agent.post(`/api/wishlist/${book._id}/move-to-cart`)),
+    );
+    for (const response of results) assert.ok([200, 404].includes(response.status), `status ${response.status}`);
+    const cart = (await agent.get('/api/cart')).body.cart;
+    assert.equal(cart.items.length, 1);
+    assert.equal(cart.items[0].quantity, 2);
+    assert.equal((await agent.get('/api/wishlist')).body.wishlist.count, 0);
+  });
+
+  test('wishlist removal fails after the cart update succeeds: retry succeeds without changing the quantity', async () => {
+    const { agent } = await createCustomer();
+    await agent.post('/api/wishlist').send({ bookId: String(book._id) });
+
+    const originalUpdateOne = Wishlist.updateOne;
+    let failedOnce = false;
+    mock.method(Wishlist, 'updateOne', function patched(...args) {
+      if (args[1]?.$pull && !failedOnce) {
+        failedOnce = true;
+        return Promise.reject(new Error('simulated wishlist removal failure'));
+      }
+      return originalUpdateOne.apply(this, args);
+    });
+
+    try {
+      const failed = await agent.post(`/api/wishlist/${book._id}/move-to-cart`);
+      assert.equal(failed.status, 500);
+      assert.equal(failedOnce, true);
+      // Cart step already succeeded; wishlist entry is still there.
+      assert.equal((await Cart.findOne({}).lean()).items[0].quantity, 1);
+      assert.equal((await Wishlist.findOne({}).lean()).books.length, 1);
+
+      // Retry (the mock now passes through): must succeed and must not add another copy.
+      const retry = await agent.post(`/api/wishlist/${book._id}/move-to-cart`);
+      assert.equal(retry.status, 200);
+      assert.equal(retry.body.cart.items.length, 1);
+      assert.equal(retry.body.cart.items[0].quantity, 1);
+      assert.equal(retry.body.wishlist.count, 0);
+    } finally {
+      mock.restoreAll();
+    }
+  });
+
+  test('the same partial failure with an existing quantity of 3 leaves 3 after the retry', async () => {
+    const { agent } = await createCustomer();
+    await agent.post('/api/cart').send({ bookId: String(book._id), quantity: 3 });
+    await agent.post('/api/wishlist').send({ bookId: String(book._id) });
+
+    const originalUpdateOne = Wishlist.updateOne;
+    let failedOnce = false;
+    mock.method(Wishlist, 'updateOne', function patched(...args) {
+      if (args[1]?.$pull && !failedOnce) {
+        failedOnce = true;
+        return Promise.reject(new Error('simulated wishlist removal failure'));
+      }
+      return originalUpdateOne.apply(this, args);
+    });
+
+    try {
+      assert.equal((await agent.post(`/api/wishlist/${book._id}/move-to-cart`)).status, 500);
+      const retry = await agent.post(`/api/wishlist/${book._id}/move-to-cart`);
+      assert.equal(retry.status, 200);
+      assert.equal(retry.body.cart.items[0].quantity, 3);
+      assert.equal(retry.body.wishlist.count, 0);
+    } finally {
+      mock.restoreAll();
+    }
   });
 });

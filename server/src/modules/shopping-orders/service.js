@@ -129,6 +129,7 @@ async function getOrCreateCart(userId) {
 /**
  * Ensures the cart holds AT LEAST `quantity` copies of a book. This is not an increment:
  * calling it again, or with the book already in the cart at a higher quantity, changes nothing.
+ * It fails with 409 INSUFFICIENT_STOCK if current stock is below the quantity the cart would hold.
  * Used by wishlist "move to cart" so retries and simultaneous requests cannot add extra copies.
  *
  * Each attempt is a compare-and-swap on the cart's version (__v), so two simultaneous requests
@@ -143,12 +144,16 @@ export async function ensureCartItem(userId, { bookId, quantity = 1 }) {
     const items = cart.toObject().items;
     const existing = items.find((item) => String(item.book) === String(book._id));
 
-    // Already satisfied: leave the cart exactly as it is (no stock check, no change).
+    // Stock is always checked against what the cart must hold afterwards: the requested quantity, or
+    // the quantity already in the cart if that is higher. If the cart already holds more than is in
+    // stock, this fails (409) and leaves the cart untouched, so the caller can keep its own state.
+    assertStock(book, Math.max(quantity, existing?.quantity ?? 0));
+
+    // Already satisfied: leave the cart exactly as it is.
     if (existing && existing.quantity >= quantity) {
       return serializeCart(await populateCart(cart));
     }
 
-    assertStock(book, quantity);
     const nextItems = existing
       ? items.map((item) => (item === existing ? { ...item, quantity } : item))
       : [...items, { book: book._id, quantity }];
