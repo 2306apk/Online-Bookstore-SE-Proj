@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiError } from '../../api/client.js';
 import { useCart } from '../../app/CartContext.jsx';
 
@@ -43,7 +44,7 @@ export function CartPage() {
       <div className="section-intro">
         <p className="eyebrow">Your saved shelf</p>
         <h1>Cart</h1>
-        <p>Keep the books you are considering close. Checkout is intentionally coming in a later sprint.</p>
+        <p>Keep the books you are considering close. When you are ready, continue to checkout to review your delivery details and total.</p>
       </div>
       {error && <div className="alert error" role="alert">{error}</div>}
       {cart.items.length === 0 ? (
@@ -82,6 +83,7 @@ export function CartPage() {
             <div className="summary-line"><span>Items</span><span>{cart.itemCount}</span></div>
             <div className="summary-line total-line"><span>Total</span><strong>{formatPrice(cart.total)}</strong></div>
             <p className="summary-note">Prices are recalculated from the catalogue on every cart change.</p>
+            <Link className="primary-button cart-checkout-link" to="/checkout">Proceed to checkout</Link>
           </aside>
         </div>
       )}

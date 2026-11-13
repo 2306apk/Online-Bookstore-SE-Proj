@@ -9,6 +9,7 @@ import administrationRoutes from './modules/administration-security/routes.js';
 import bookCatalogueRoutes from './modules/book-catalogue/routes.js';
 import shoppingRoutes from './modules/shopping-orders/routes.js';
 import wishlistRoutes from './modules/shopping-orders/wishlist.routes.js';
+import checkoutRoutes from './modules/shopping-orders/checkout.routes.js';
 import { rejectUnsafeInput } from './middleware/sanitize.js';
 import mongoose from 'mongoose';
 
@@ -34,6 +35,7 @@ app.use('/api/auth', authenticationRoutes);
 app.use('/api/books', bookCatalogueRoutes);
 app.use('/api/cart', shoppingRoutes);
 app.use('/api/wishlist', wishlistRoutes);
+app.use('/api/checkout', checkoutRoutes);
 app.use('/api/admin', administrationRoutes);
 
 app.use(notFoundHandler);
