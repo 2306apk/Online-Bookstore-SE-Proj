@@ -1,6 +1,7 @@
 
 import { Router } from 'express';
-import { browseBooks, toCategory } from './service.js';
+import { browseBooks, toBook, toCategory } from './service.js';
+import { AppError, asyncHandler } from '../../middleware/errors.js';
 import { searchBooks } from './search.js';
 import { validateBrowseQuery } from './schemas.js';
 import { Category } from './models/Category.js';
@@ -82,5 +83,35 @@ router.get('/', async (request, response) => {
     });
   }
 });
+router.get(
+  '/:id',
+  asyncHandler(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new AppError(
+        400,
+        'Invalid book identifier.',
+        'INVALID_IDENTIFIER'
+      );
+    }
 
+    const book = await Book.findOne({
+      _id: request.params.id,
+      active: true,
+    })
+      .populate('category', 'name slug')
+      .exec();
+
+    if (!book) {
+      throw new AppError(
+        404,
+        'Book not found.',
+        'NOT_FOUND'
+      );
+    }
+
+    return response.status(200).json({
+      book: toBook(book),
+    });
+  })
+);
 export default router;

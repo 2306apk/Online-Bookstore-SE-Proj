@@ -1,23 +1,41 @@
+
+import { Link } from 'react-router-dom';
 import { WishlistButton } from '../shopping-orders/WishlistButton.jsx';
 
 export function BookCard({ book }) {
+  const bookId = book.id || book._id;
+
   return (
     <article className="book-card">
-      <WishlistButton bookId={book.id} title={book.title} />
-      {book.coverImage ? (
-        <img
-          src={book.coverImage}
-          alt={`Cover of ${book.title}`}
-          className="book-card__image"
-        />
-      ) : (
-        <div className="book-card__placeholder">
-          No Cover Available
-        </div>
-      )}
+      <WishlistButton bookId={bookId} title={book.title} />
+
+      <Link
+        to={`/books/${encodeURIComponent(bookId)}`}
+        className="book-card__details-link"
+        aria-label={`View details for ${book.title}`}
+      >
+        {book.coverImage ? (
+          <img
+            src={book.coverImage}
+            alt={`Cover of ${book.title}`}
+            className="book-card__image"
+          />
+        ) : (
+          <div className="book-card__placeholder">
+            No Cover Available
+          </div>
+        )}
+      </Link>
 
       <div className="book-card__content">
-        <h2>{book.title}</h2>
+        <h2>
+          <Link
+            to={`/books/${encodeURIComponent(bookId)}`}
+            className="book-card__details-link"
+          >
+            {book.title}
+          </Link>
+        </h2>
 
         <p>
           <strong>Author:</strong> {book.author}

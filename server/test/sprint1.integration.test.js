@@ -153,6 +153,35 @@ describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () 
 });
 
 describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
+    test('returns details for an active book with its category', async () => {
+    const response = await request(app)
+      .get(`/api/books/${availableBook._id}`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.book.id, availableBook._id.toString());
+    assert.equal(response.body.book.title, 'Reliable Systems');
+    assert.equal(response.body.book.author, 'Ada Lovelace');
+    assert.equal(response.body.book.description, 'A practical guide to robust systems.');
+    assert.equal(response.body.book.isbn, '');
+    assert.equal(response.body.book.stock, 4);
+    assert.equal(response.body.book.category.name, 'Technology');
+  });
+
+  test('rejects invalid, nonexistent and inactive book identifiers', async () => {
+    const invalid = await request(app).get('/api/books/not-a-valid-id');
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.error.code, 'INVALID_IDENTIFIER');
+
+    const missing = await request(app)
+      .get('/api/books/000000000000000000000001');
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'NOT_FOUND');
+
+    const inactive = await request(app)
+      .get(`/api/books/${inactiveBook._id}`);
+    assert.equal(inactive.status, 404);
+    assert.equal(inactive.body.error.code, 'NOT_FOUND');
+  });
   test('lists active books, matches title/author/keyword and handles no results safely', async () => {
     const list = await request(app).get('/api/books');
     assert.equal(list.status, 200);
