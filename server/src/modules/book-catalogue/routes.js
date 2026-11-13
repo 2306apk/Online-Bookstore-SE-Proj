@@ -1,10 +1,22 @@
 
 import { Router } from 'express';
-import { browseBooks, toCategory } from './service.js';
+import { browseBooks, toBook, toCategory } from './service.js';
+import { AppError, asyncHandler } from '../../middleware/errors.js';
 import { searchBooks } from './search.js';
 import { validateBrowseQuery } from './schemas.js';
 import { Category } from './models/Category.js';
 import { Book } from './models/Book.js';
+
+import {
+  authenticate,
+  requireRole,
+} from '../authentication-security/middleware.js';
+import { validate } from '../../middleware/validate.js';
+import { createReviewSchema } from './review.schemas.js';
+import {
+  createBookReview,
+  listBookReviews,
+} from './review.service.js';
 
 const router = Router();
 
@@ -82,5 +94,81 @@ router.get('/', async (request, response) => {
     });
   }
 });
+
+// Get reviews and aggregate rating for a book.
+router.get(
+  '/:id/reviews',
+  asyncHandler(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new AppError(
+        400,
+        'Invalid book identifier.',
+        'INVALID_IDENTIFIER'
+      );
+    }
+
+    const result = await listBookReviews(request.params.id);
+
+    return response.status(200).json(result);
+  })
+);
+
+// Submit a review. Only authenticated CUSTOMER accounts are allowed.
+router.post(
+  '/:id/reviews',
+  authenticate,
+  requireRole('CUSTOMER'),
+  validate(createReviewSchema),
+  asyncHandler(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new AppError(
+        400,
+        'Invalid book identifier.',
+        'INVALID_IDENTIFIER'
+      );
+    }
+
+    const review = await createBookReview(
+      request.params.id,
+      request.user.id,
+      request.body
+    );
+
+    return response.status(201).json({ review });
+  })
+);
+
+// Get individual book details.
+router.get(
+  '/:id',
+  asyncHandler(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new AppError(
+        400,
+        'Invalid book identifier.',
+        'INVALID_IDENTIFIER'
+      );
+    }
+
+    const book = await Book.findOne({
+      _id: request.params.id,
+      active: true,
+    })
+      .populate('category', 'name slug')
+      .exec();
+
+    if (!book) {
+      throw new AppError(
+        404,
+        'Book not found.',
+        'NOT_FOUND'
+      );
+    }
+
+    return response.status(200).json({
+      book: toBook(book),
+    });
+  })
+);
 
 export default router;

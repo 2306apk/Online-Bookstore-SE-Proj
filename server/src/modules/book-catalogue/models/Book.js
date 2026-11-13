@@ -16,6 +16,13 @@ const bookSchema = new mongoose.Schema(
       maxlength: 120,
     },
 
+     publisher: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 150,
+    },
+
     description: {
       type: String,
       default: '',

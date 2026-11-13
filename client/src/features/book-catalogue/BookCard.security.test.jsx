@@ -1,6 +1,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { BookCard } from './BookCard.jsx';
 
 afterEach(() => {
@@ -20,7 +21,11 @@ describe('OBS-SR-03: BookCard XSS protection', () => {
   };
 
   it('renders potentially malicious HTML as text, not executable elements', () => {
-    const { container } = render(<BookCard book={book} />);
+    const { container } = render(
+      <MemoryRouter>
+        <BookCard book={book} />
+      </MemoryRouter>
+    );
 
     expect(
       screen.getByText('<script>alert("XSS")</script>')
@@ -35,7 +40,11 @@ describe('OBS-SR-03: BookCard XSS protection', () => {
   });
 
   it('preserves legitimate punctuation and special characters', () => {
-    render(<BookCard book={book} />);
+    render(
+      <MemoryRouter>
+        <BookCard book={book} />
+      </MemoryRouter>
+    );
 
     expect(screen.getByText("O'Connor & Sons")).toBeInTheDocument();
     expect(screen.getByText('Fiction & Literature')).toBeInTheDocument();
