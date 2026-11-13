@@ -1,3 +1,4 @@
+
 import mongoose from 'mongoose';
 import { AppError } from '../../middleware/errors.js';
 import { Book } from '../book-catalogue/models/Book.js';
@@ -75,7 +76,18 @@ export async function updateBook(bookId, data) {
     const category = await requireCategory(data.category);
     book.category = category._id;
   }
-  for (const field of ['title', 'author', 'description', 'keywords', 'price', 'coverUrl', 'stock', 'active']) {
+
+  for (const field of [
+    'title',
+    'author',
+    'publisher',
+    'description',
+    'keywords',
+    'price',
+    'coverUrl',
+    'stock',
+    'active',
+  ]) {
     if (data[field] !== undefined) book[field] = data[field];
   }
 
@@ -87,4 +99,3 @@ export async function updateBook(bookId, data) {
 export async function deactivateBook(bookId) {
   return updateBook(bookId, { active: false });
 }
-

@@ -1,3 +1,4 @@
+
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import mongoose from 'mongoose';
@@ -8,6 +9,7 @@ import { hashPassword } from '../src/modules/authentication-security/password.js
 import { User } from '../src/modules/authentication-security/models/User.js';
 import { Book } from '../src/modules/book-catalogue/models/Book.js';
 import { Category } from '../src/modules/book-catalogue/models/Category.js';
+import { Review } from '../src/modules/book-catalogue/models/Review.js';
 import { Cart } from '../src/modules/shopping-orders/models/Cart.js';
 
 let mongo;
@@ -21,26 +23,41 @@ const adminPassword = 'AdminPass123!';
 
 async function createCustomer(email = `customer-${Date.now()}@example.com`) {
   const agent = request.agent(app);
+
   const response = await agent.post('/api/auth/register').send({
     name: 'Test Customer',
     email,
     password: customerPassword,
   });
+
   assert.equal(response.status, 201);
-  return { agent, user: response.body.user, email };
+
+  return {
+    agent,
+    user: response.body.user,
+    email,
+  };
 }
 
 async function createAdmin() {
   const email = `admin-${Date.now()}@example.com`;
+
   await User.create({
     name: 'Test Admin',
     email,
     passwordHash: await hashPassword(adminPassword),
     role: 'ADMIN',
   });
+
   const agent = request.agent(app);
-  const response = await agent.post('/api/auth/login').send({ email, password: adminPassword });
+
+  const response = await agent.post('/api/auth/login').send({
+    email,
+    password: adminPassword,
+  });
+
   assert.equal(response.status, 200);
+
   return agent;
 }
 
@@ -54,8 +71,20 @@ before(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([User.deleteMany({}), Book.deleteMany({}), Category.deleteMany({}), Cart.deleteMany({})]);
-  category = await Category.create({ name: 'Technology', slug: 'technology', description: 'Technology books' });
+  await Promise.all([
+    User.deleteMany({}),
+    Book.deleteMany({}),
+    Category.deleteMany({}),
+    Cart.deleteMany({}),
+    Review.deleteMany({}),
+  ]);
+
+  category = await Category.create({
+    name: 'Technology',
+    slug: 'technology',
+    description: 'Technology books',
+  });
+
   [availableBook, outOfStockBook, inactiveBook] = await Book.create([
     {
       title: 'Reliable Systems',
@@ -92,6 +121,7 @@ beforeEach(async () => {
 
 after(async () => {
   await mongoose.disconnect();
+
   if (mongo) {
     await mongo.stop();
   }
@@ -100,6 +130,7 @@ after(async () => {
 describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () => {
   test('registers a customer, rejects duplicates and stores only a hash', async () => {
     const agent = request.agent(app);
+
     const registration = await agent.post('/api/auth/register').send({
       name: 'A New Reader',
       email: 'reader@example.com',
@@ -110,7 +141,10 @@ describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () 
     assert.equal(registration.body.user.email, 'reader@example.com');
     assert.equal(registration.body.user.passwordHash, undefined);
 
-    const storedUser = await User.findOne({ email: 'reader@example.com' }).select('+passwordHash');
+    const storedUser = await User.findOne({
+      email: 'reader@example.com',
+    }).select('+passwordHash');
+
     assert.ok(storedUser.passwordHash);
     assert.notEqual(storedUser.passwordHash, customerPassword);
     assert.ok(storedUser.passwordHash.startsWith('$2'));
@@ -120,6 +154,7 @@ describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () 
       email: 'reader@example.com',
       password: customerPassword,
     });
+
     assert.equal(duplicate.status, 409);
 
     const weak = await request(app).post('/api/auth/register').send({
@@ -127,6 +162,7 @@ describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () 
       email: 'weak@example.com',
       password: 'short',
     });
+
     assert.equal(weak.status, 400);
   });
 
@@ -137,11 +173,21 @@ describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () 
       passwordHash: await hashPassword(customerPassword),
       role: 'CUSTOMER',
     });
+
     const agent = request.agent(app);
-    const invalid = await agent.post('/api/auth/login').send({ email: 'login@example.com', password: 'WrongPass123!' });
+
+    const invalid = await agent.post('/api/auth/login').send({
+      email: 'login@example.com',
+      password: 'WrongPass123!',
+    });
+
     assert.equal(invalid.status, 401);
 
-    const login = await agent.post('/api/auth/login').send({ email: 'login@example.com', password: customerPassword });
+    const login = await agent.post('/api/auth/login').send({
+      email: 'login@example.com',
+      password: customerPassword,
+    });
+
     assert.equal(login.status, 200);
     assert.equal(login.body.user.role, 'CUSTOMER');
     assert.equal((await agent.get('/api/cart')).status, 200);
@@ -153,7 +199,7 @@ describe('TC-AUTH-01, TC-AUTH-02, TC-AUTH-03 and TC-SEC-01: authentication', () 
 });
 
 describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
-    test('returns details for an active book with its category', async () => {
+  test('returns details for an active book with its category', async () => {
     const response = await request(app)
       .get(`/api/books/${availableBook._id}`);
 
@@ -161,7 +207,10 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
     assert.equal(response.body.book.id, availableBook._id.toString());
     assert.equal(response.body.book.title, 'Reliable Systems');
     assert.equal(response.body.book.author, 'Ada Lovelace');
-    assert.equal(response.body.book.description, 'A practical guide to robust systems.');
+    assert.equal(
+      response.body.book.description,
+      'A practical guide to robust systems.'
+    );
     assert.equal(response.body.book.isbn, '');
     assert.equal(response.body.book.stock, 4);
     assert.equal(response.body.book.category.name, 'Technology');
@@ -169,43 +218,64 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
 
   test('rejects invalid, nonexistent and inactive book identifiers', async () => {
     const invalid = await request(app).get('/api/books/not-a-valid-id');
+
     assert.equal(invalid.status, 400);
     assert.equal(invalid.body.error.code, 'INVALID_IDENTIFIER');
 
-    const missing = await request(app)
-      .get('/api/books/000000000000000000000001');
+    const missing = await request(app).get(
+      '/api/books/000000000000000000000001'
+    );
+
     assert.equal(missing.status, 404);
     assert.equal(missing.body.error.code, 'NOT_FOUND');
 
     const inactive = await request(app)
       .get(`/api/books/${inactiveBook._id}`);
+
     assert.equal(inactive.status, 404);
     assert.equal(inactive.body.error.code, 'NOT_FOUND');
   });
+
   test('lists active books, matches title/author/keyword and handles no results safely', async () => {
     const list = await request(app).get('/api/books');
+
     assert.equal(list.status, 200);
     assert.equal(list.body.books.length, 2);
-    assert.ok(list.body.books.some((book) => book.title === availableBook.title));
-    assert.ok(!list.body.books.some((book) => book.title === inactiveBook.title));
+    assert.ok(
+      list.body.books.some((book) => book.title === availableBook.title)
+    );
+    assert.ok(
+      !list.body.books.some((book) => book.title === inactiveBook.title)
+    );
 
     const titleMatch = await request(app).get('/api/books?q=reliable');
     assert.equal(titleMatch.body.books.length, 1);
+
     const authorMatch = await request(app).get('/api/books?author=hopper');
     assert.equal(authorMatch.body.books.length, 1);
-    const keywordMatch = await request(app).get('/api/books?keyword=engineering');
+
+    const keywordMatch = await request(app).get(
+      '/api/books?keyword=engineering'
+    );
     assert.equal(keywordMatch.body.books.length, 1);
+
     const noMatch = await request(app).get('/api/books?q=does-not-exist');
     assert.equal(noMatch.status, 200);
     assert.equal(noMatch.body.books.length, 0);
+
     const escaped = await request(app).get('/api/books?q=.*');
     assert.equal(escaped.status, 200);
     assert.equal(escaped.body.books.length, 0);
-    const unsafeQuery = await request(app).get('/api/books?q[$ne]=anything');
+
+    const unsafeQuery = await request(app).get(
+      '/api/books?q[$ne]=anything'
+    );
     assert.equal(unsafeQuery.status, 400);
   });
+
   test('filters active books by minimum and maximum price', async () => {
     const minimum = await request(app).get('/api/books?minPrice=20');
+
     assert.equal(minimum.status, 200);
     assert.deepEqual(
       minimum.body.books.map((book) => book.title),
@@ -213,13 +283,17 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
     );
 
     const maximum = await request(app).get('/api/books?maxPrice=20');
+
     assert.equal(maximum.status, 200);
     assert.deepEqual(
       maximum.body.books.map((book) => book.title),
       ['Empty Shelf']
     );
 
-    const range = await request(app).get('/api/books?minPrice=18&maxPrice=25');
+    const range = await request(app).get(
+      '/api/books?minPrice=18&maxPrice=25'
+    );
+
     assert.equal(range.status, 200);
     assert.equal(range.body.pagination.total, 2);
   });
@@ -236,7 +310,9 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
 
   test('combines category, price, stock and text search filters', async () => {
     const combined = await request(app)
-      .get(`/api/books?category=${category._id}&minPrice=20&maxPrice=30&inStock=true`);
+      .get(
+        `/api/books?category=${category._id}&minPrice=20&maxPrice=30&inStock=true`
+      );
 
     assert.equal(combined.status, 200);
     assert.equal(combined.body.pagination.total, 1);
@@ -254,7 +330,7 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
     await Category.create({
       name: 'Inactive Category',
       slug: 'inactive-category',
-      active: false
+      active: false,
     });
 
     const response = await request(app).get('/api/books/categories');
@@ -268,49 +344,236 @@ describe('TC-CAT-01 and TC-SRCH-01: catalogue and search', () => {
   });
 
   test('returns HTTP 400 for invalid filter parameters', async () => {
-    const invalidMinimum = await request(app).get('/api/books?minPrice=-10');
+    const invalidMinimum = await request(app).get(
+      '/api/books?minPrice=-10'
+    );
     assert.equal(invalidMinimum.status, 400);
 
-    const invalidMaximum = await request(app).get('/api/books?maxPrice=abc');
+    const invalidMaximum = await request(app).get(
+      '/api/books?maxPrice=abc'
+    );
     assert.equal(invalidMaximum.status, 400);
 
-    const invalidBoolean = await request(app).get('/api/books?inStock=yes');
+    const invalidBoolean = await request(app).get(
+      '/api/books?inStock=yes'
+    );
     assert.equal(invalidBoolean.status, 400);
 
-    const invalidRange = await request(app).get('/api/books?minPrice=100&maxPrice=50');
+    const invalidRange = await request(app).get(
+      '/api/books?minPrice=100&maxPrice=50'
+    );
     assert.equal(invalidRange.status, 400);
+  });
+});
+
+describe('OBS-21: book reviews and aggregate ratings', () => {
+  test('returns an empty review list and zero rating for a book without reviews', async () => {
+    const response = await request(app)
+      .get(`/api/books/${availableBook._id}/reviews`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.reviews, []);
+    assert.equal(response.body.rating.average, 0);
+    assert.equal(response.body.rating.count, 0);
+  });
+
+  test('allows customers to submit reviews and calculates the aggregate rating', async () => {
+    const firstCustomer = await createCustomer('review-one@example.com');
+    const secondCustomer = await createCustomer('review-two@example.com');
+
+    const firstReview = await firstCustomer.agent
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 5,
+        comment: 'Excellent book with useful explanations.',
+      });
+
+    assert.equal(firstReview.status, 201);
+    assert.equal(firstReview.body.review.rating, 5);
+
+    const secondReview = await secondCustomer.agent
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 3,
+        comment: 'Good book but some sections need improvement.',
+      });
+
+    assert.equal(secondReview.status, 201);
+
+    const response = await request(app)
+      .get(`/api/books/${availableBook._id}/reviews`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.reviews.length, 2);
+    assert.equal(response.body.rating.average, 4);
+    assert.equal(response.body.rating.count, 2);
+  });
+
+  test('rejects guests, duplicate reviews and invalid review data', async () => {
+    const guestResponse = await request(app)
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 5,
+        comment: 'This review should not be accepted.',
+      });
+
+    assert.equal(guestResponse.status, 401);
+
+    const customer = await createCustomer(
+      'review-duplicate@example.com'
+    );
+
+    const invalidRating = await customer.agent
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 6,
+        comment: 'This rating is outside the allowed range.',
+      });
+
+    assert.equal(invalidRating.status, 400);
+
+    const shortComment = await customer.agent
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 4,
+        comment: 'Short',
+      });
+
+    assert.equal(shortComment.status, 400);
+
+    const validReview = await customer.agent
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 4,
+        comment: 'This is a valid review for testing.',
+      });
+
+    assert.equal(validReview.status, 201);
+
+    const duplicate = await customer.agent
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 5,
+        comment: 'Trying to submit a second review.',
+      });
+
+    assert.equal(duplicate.status, 409);
+  });
+
+  test('allows only customers to submit reviews', async () => {
+    const admin = await createAdmin();
+
+    const response = await admin
+      .post(`/api/books/${availableBook._id}/reviews`)
+      .send({
+        rating: 5,
+        comment: 'An administrator should not submit this.',
+      });
+
+    assert.equal(response.status, 403);
+  });
+
+  test('does not allow reviews for inactive or nonexistent books', async () => {
+    const customer = await createCustomer(
+      'review-inactive@example.com'
+    );
+
+    const inactive = await customer.agent
+      .post(`/api/books/${inactiveBook._id}/reviews`)
+      .send({
+        rating: 5,
+        comment: 'This book is inactive and should be rejected.',
+      });
+
+    assert.equal(inactive.status, 404);
+
+    const missing = await request(app)
+      .get('/api/books/000000000000000000000001/reviews');
+
+    assert.equal(missing.status, 404);
   });
 });
 
 describe('TC-CART-01, TC-CART-02 and TC-SEC-03: customer cart', () => {
   test('adds, merges, updates and removes items with server stock and price checks', async () => {
     const { agent } = await createCustomer('cart-reader@example.com');
-    const unauthenticated = await request(app).post('/api/cart').send({ bookId: availableBook._id.toString(), quantity: 1 });
+
+    const unauthenticated = await request(app)
+      .post('/api/cart')
+      .send({
+        bookId: availableBook._id.toString(),
+        quantity: 1,
+      });
+
     assert.equal(unauthenticated.status, 401);
 
-    const firstAdd = await agent.post('/api/cart').send({ bookId: availableBook._id.toString(), quantity: 2 });
+    const firstAdd = await agent.post('/api/cart').send({
+      bookId: availableBook._id.toString(),
+      quantity: 2,
+    });
+
     assert.equal(firstAdd.status, 201);
     assert.equal(firstAdd.body.cart.items[0].quantity, 2);
     assert.equal(firstAdd.body.cart.total, 50);
 
-    const duplicateAdd = await agent.post('/api/cart').send({ bookId: availableBook._id.toString(), quantity: 1 });
+    const duplicateAdd = await agent.post('/api/cart').send({
+      bookId: availableBook._id.toString(),
+      quantity: 1,
+    });
+
     assert.equal(duplicateAdd.status, 201);
     assert.equal(duplicateAdd.body.cart.items[0].quantity, 3);
     assert.equal(duplicateAdd.body.cart.items[0].lineTotal, 75);
+
     const itemId = duplicateAdd.body.cart.items[0].itemId;
 
-    assert.equal((await agent.patch(`/api/cart/${itemId}`).send({ quantity: 4 })).status, 200);
-    assert.equal((await agent.patch(`/api/cart/${itemId}`).send({ quantity: 5 })).status, 409);
-    assert.equal((await agent.patch(`/api/cart/${itemId}`).send({ quantity: 1.5 })).status, 400);
-    assert.equal((await agent.post('/api/cart').send({ bookId: availableBook._id.toString(), quantity: 0 })).status, 400);
-    assert.equal((await agent.post('/api/cart').send({ bookId: outOfStockBook._id.toString(), quantity: 1 })).status, 409);
+    assert.equal(
+      (await agent.patch(`/api/cart/${itemId}`).send({ quantity: 4 })).status,
+      200
+    );
+
+    assert.equal(
+      (await agent.patch(`/api/cart/${itemId}`).send({ quantity: 5 })).status,
+      409
+    );
+
+    assert.equal(
+      (await agent.patch(`/api/cart/${itemId}`).send({ quantity: 1.5 })).status,
+      400
+    );
+
+    assert.equal(
+      (
+        await agent.post('/api/cart').send({
+          bookId: availableBook._id.toString(),
+          quantity: 0,
+        })
+      ).status,
+      400
+    );
+
+    assert.equal(
+      (
+        await agent.post('/api/cart').send({
+          bookId: outOfStockBook._id.toString(),
+          quantity: 1,
+        })
+      ).status,
+      409
+    );
 
     const secondCustomer = await createCustomer('cart-other@example.com');
     const otherCart = await secondCustomer.agent.get('/api/cart');
+
     assert.equal(otherCart.body.cart.items.length, 0);
-    assert.equal((await secondCustomer.agent.delete(`/api/cart/${itemId}`)).status, 404);
+
+    assert.equal(
+      (await secondCustomer.agent.delete(`/api/cart/${itemId}`)).status,
+      404
+    );
 
     const removed = await agent.delete(`/api/cart/${itemId}`);
+
     assert.equal(removed.status, 200);
     assert.equal(removed.body.cart.itemCount, 0);
   });
@@ -319,41 +582,95 @@ describe('TC-CART-01, TC-CART-02 and TC-SEC-03: customer cart', () => {
 describe('TC-ADM-01 and TC-SEC-02: administration and RBAC', () => {
   test('blocks guests/customers and lets admins manage categories and books', async () => {
     assert.equal((await request(app).get('/api/admin/books')).status, 401);
+
     const customer = await createCustomer('normal-reader@example.com');
-    assert.equal((await customer.agent.get('/api/admin/books')).status, 403);
-    assert.equal((await customer.agent.post('/api/admin/categories').send({ name: 'Blocked' })).status, 403);
+
+    assert.equal(
+      (await customer.agent.get('/api/admin/books')).status,
+      403
+    );
+
+    assert.equal(
+      (
+        await customer.agent
+          .post('/api/admin/categories')
+          .send({ name: 'Blocked' })
+      ).status,
+      403
+    );
 
     const admin = await createAdmin();
-    const categoryResponse = await admin.post('/api/admin/categories').send({ name: 'History', description: 'Historical works' });
+
+    const categoryResponse = await admin
+      .post('/api/admin/categories')
+      .send({
+        name: 'History',
+        description: 'Historical works',
+      });
+
     assert.equal(categoryResponse.status, 201);
+
     const history = categoryResponse.body.category;
 
-    const invalidBook = await admin.post('/api/admin/books').send({ title: '', author: 'Nope', price: -1, stock: 1, category: history.id });
+    const invalidBook = await admin
+      .post('/api/admin/books')
+      .send({
+        title: '',
+        author: 'Nope',
+        price: -1,
+        stock: 1,
+        category: history.id,
+      });
+
     assert.equal(invalidBook.status, 400);
 
-    const created = await admin.post('/api/admin/books').send({
-      title: 'A New Historical Record',
-      author: 'Archivist One',
-      description: 'A new admin-managed title.',
-      keywords: ['history', 'archive'],
-      price: 31.5,
-      stock: 8,
-      category: history.id,
-      active: true,
-    });
+    const created = await admin
+      .post('/api/admin/books')
+      .send({
+        title: 'A New Historical Record',
+        author: 'Archivist One',
+        description: 'A new admin-managed title.',
+        keywords: ['history', 'archive'],
+        price: 31.5,
+        stock: 8,
+        category: history.id,
+        active: true,
+      });
+
     assert.equal(created.status, 201);
+
     const createdBook = created.body.book;
+
     assert.equal(createdBook.category.id, history.id);
 
-    const publicMatch = await request(app).get('/api/books?q=historical');
+    const publicMatch = await request(app).get(
+      '/api/books?q=historical'
+    );
+
     assert.equal(publicMatch.body.books.length, 1);
     assert.equal(publicMatch.body.books[0].title, createdBook.title);
 
-    const updatedCategory = await admin.patch(`/api/admin/categories/${history.id}`).send({ name: 'History & Memory' });
+    const updatedCategory = await admin
+      .patch(`/api/admin/categories/${history.id}`)
+      .send({
+        name: 'History & Memory',
+      });
+
     assert.equal(updatedCategory.status, 200);
-    const updatedBook = await admin.patch(`/api/admin/books/${createdBook.id}`).send({ price: 35, active: false });
+
+    const updatedBook = await admin
+      .patch(`/api/admin/books/${createdBook.id}`)
+      .send({
+        price: 35,
+        active: false,
+      });
+
     assert.equal(updatedBook.status, 200);
     assert.equal(updatedBook.body.book.price, 35);
-    assert.equal((await request(app).get('/api/books?q=historical')).body.books.length, 0);
+
+    assert.equal(
+      (await request(app).get('/api/books?q=historical')).body.books.length,
+      0
+    );
   });
 });

@@ -1,7 +1,7 @@
 
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { apiFetch } from '../../api/client.js';
+import { apiFetch, jsonBody } from '../../api/client.js';
 import { useAuth } from '../../app/AuthContext.jsx';
 import { useCart } from '../../app/CartContext.jsx';
 
@@ -12,11 +12,49 @@ export function BookDetailsPage() {
   const { addItem } = useCart();
 
   const [book, setBook] = useState(null);
+  const [reviews, setReviews] = useState([]);
+  const [ratingSummary, setRatingSummary] = useState({
+    average: 0,
+    count: 0,
+  });
+
   const [loading, setLoading] = useState(true);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [reviewError, setReviewError] = useState('');
   const [cartError, setCartError] = useState('');
-  const [adding, setAdding] = useState(false);
+  const [cartAdding, setCartAdding] = useState(false);
   const [added, setAdded] = useState(false);
+
+  const [rating, setRating] = useState('5');
+  const [comment, setComment] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
+
+  async function loadReviews(signal) {
+    setReviewsLoading(true);
+    setReviewError('');
+
+    try {
+      const response = await apiFetch(
+        `/books/${encodeURIComponent(id)}/reviews`,
+        { signal }
+      );
+
+      setReviews(response.reviews || []);
+      setRatingSummary(
+        response.rating || { average: 0, count: 0 }
+      );
+    } catch (err) {
+      if (!signal?.aborted) {
+        setReviewError(err.message || 'Unable to load reviews.');
+      }
+    } finally {
+      if (!signal?.aborted) {
+        setReviewsLoading(false);
+      }
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -45,6 +83,7 @@ export function BookDetailsPage() {
     }
 
     loadBook();
+    loadReviews(controller.signal);
 
     return () => controller.abort();
   }, [id]);
@@ -55,7 +94,7 @@ export function BookDetailsPage() {
       return;
     }
 
-    setAdding(true);
+    setCartAdding(true);
     setCartError('');
     setAdded(false);
 
@@ -65,7 +104,45 @@ export function BookDetailsPage() {
     } catch (err) {
       setCartError(err.message || 'Unable to add this book to your cart.');
     } finally {
-      setAdding(false);
+      setCartAdding(false);
+    }
+  }
+
+  async function handleSubmitReview(event) {
+    event.preventDefault();
+    setReviewError('');
+    setReviewSubmitted(false);
+
+    if (!user || user.role !== 'CUSTOMER') {
+      navigate('/auth');
+      return;
+    }
+
+    if (comment.trim().length < 10) {
+      setReviewError('Your review must contain at least 10 characters.');
+      return;
+    }
+
+    setSubmittingReview(true);
+
+    try {
+      await apiFetch(`/books/${encodeURIComponent(id)}/reviews`, {
+        method: 'POST',
+        body: jsonBody({
+          rating: Number(rating),
+          comment: comment.trim(),
+        }),
+      });
+
+      setComment('');
+      setRating('5');
+      setReviewSubmitted(true);
+
+      await loadReviews();
+    } catch (err) {
+      setReviewError(err.message || 'Unable to submit your review.');
+    } finally {
+      setSubmittingReview(false);
     }
   }
 
@@ -93,7 +170,7 @@ export function BookDetailsPage() {
   return (
     <main className="book-details-page">
       <Link to="/" className="book-details-back">
-        ← Back to Catalogue
+        &larr; Back to Catalogue
       </Link>
 
       <section className="book-details">
@@ -136,7 +213,7 @@ export function BookDetailsPage() {
               <strong>ISBN:</strong> {book.isbn || 'Not provided'}
             </p>
             <p>
-              <strong>Publisher:</strong> Not available
+              <strong>Publisher:</strong> {book.publisher || 'Not provided'}
             </p>
           </div>
 
@@ -147,17 +224,117 @@ export function BookDetailsPage() {
 
           <div className="book-details__reviews">
             <h2>Reviews and Rating</h2>
-            <p>Reviews and aggregate rating are not available yet.</p>
+
+            {reviewsLoading ? (
+              <p role="status">Loading reviews...</p>
+            ) : (
+              <>
+                <p>
+                  <strong>
+                    {ratingSummary.count > 0
+                      ? `${ratingSummary.average} / 5`
+                      : 'No ratings yet'}
+                  </strong>
+                  {' '}
+                  ({ratingSummary.count} reviews)
+                </p>
+
+                {reviews.length === 0 ? (
+                  <p>No reviews have been submitted yet.</p>
+                ) : (
+                  <div className="book-review-list">
+                    {reviews.map((review) => (
+                      <article
+                        className="book-review"
+                        key={review.id}
+                      >
+                        <p>
+                          <strong>{review.customerName}</strong>
+                        </p>
+                        <p>
+                          Rating: {review.rating} / 5
+                        </p>
+                        <p>{review.comment}</p>
+                        <small>
+                          {review.createdAt
+                            ? new Date(review.createdAt).toLocaleDateString()
+                            : ''}
+                        </small>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {user?.role === 'CUSTOMER' && (
+              <form
+                className="book-review-form"
+                onSubmit={handleSubmitReview}
+              >
+                <h3>Write a Review</h3>
+
+                <label htmlFor="review-rating">Rating</label>
+                <select
+                  id="review-rating"
+                  value={rating}
+                  onChange={(event) => setRating(event.target.value)}
+                >
+                  <option value="5">5 - Excellent</option>
+                  <option value="4">4 - Very Good</option>
+                  <option value="3">3 - Good</option>
+                  <option value="2">2 - Fair</option>
+                  <option value="1">1 - Poor</option>
+                </select>
+
+                <label htmlFor="review-comment">Your Review</label>
+                <textarea
+                  id="review-comment"
+                  value={comment}
+                  onChange={(event) => setComment(event.target.value)}
+                  minLength={10}
+                  maxLength={1000}
+                  rows={4}
+                  required
+                  placeholder="Write at least 10 characters..."
+                />
+
+                <button
+                  type="submit"
+                  className="button button-primary"
+                  disabled={submittingReview}
+                >
+                  {submittingReview ? 'Submitting...' : 'Submit Review'}
+                </button>
+              </form>
+            )}
+
+            {!user && (
+              <p>
+                <Link to="/auth">Log in as a customer</Link>
+                {' '}to submit a review.
+              </p>
+            )}
+
+            {reviewSubmitted && (
+              <p role="status">Your review was submitted successfully.</p>
+            )}
+
+            {reviewError && (
+              <p className="catalogue-error" role="alert">
+                {reviewError}
+              </p>
+            )}
           </div>
 
           {user?.role === 'CUSTOMER' && (
             <button
               type="button"
               className="button button-primary"
-              disabled={!inStock || adding}
+              disabled={!inStock || cartAdding}
               onClick={handleAddToCart}
             >
-              {adding
+              {cartAdding
                 ? 'Adding...'
                 : inStock
                   ? 'Add to Cart'

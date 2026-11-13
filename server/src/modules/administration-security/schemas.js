@@ -11,6 +11,7 @@ const optionalUrl = z.string().trim().max(1000).refine((value) => {
 }, 'Cover URL must be a valid HTTP or HTTPS URL.').default('');
 
 const bookFields = {
+  publisher: z.string().trim().max(150).default(''),
   title: z.string().trim().min(1).max(200),
   author: z.string().trim().min(1).max(120),
   description: z.string().trim().max(2000).default(''),
@@ -24,6 +25,7 @@ const bookFields = {
 
 export const createBookSchema = z.object(bookFields);
 export const updateBookSchema = z.object({
+  publisher: bookFields.publisher.optional(),
   title: bookFields.title.optional(),
   author: bookFields.author.optional(),
   description: bookFields.description.optional(),
