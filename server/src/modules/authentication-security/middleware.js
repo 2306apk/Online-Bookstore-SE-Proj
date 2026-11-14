@@ -1,7 +1,9 @@
+
 import jwt from 'jsonwebtoken';
 import config from '../../config/env.js';
 import { AppError } from '../../middleware/errors.js';
 import { findUserById, toSafeUser } from './service.js';
+import { getAuditContext, recordSecurityEvent } from './audit.service.js';
 
 function getToken(request) {
   const cookieToken = request.cookies?.[config.cookieName];
@@ -17,41 +19,80 @@ function getToken(request) {
   return null;
 }
 
+// Record denied access without storing tokens or credentials.
+async function logAccessDenied(request, userId = null) {
+  await recordSecurityEvent({
+    eventType: 'ACCESS_DENIED',
+    userId,
+    outcome: 'FAILURE',
+    ...getAuditContext(request),
+  });
+}
+
 export async function authenticate(request, response, next) {
   const token = getToken(request);
+
   if (!token) {
-    next(new AppError(401, 'Authentication is required.', 'AUTHENTICATION_REQUIRED'));
+    await logAccessDenied(request);
+    next(new AppError(
+      401,
+      'Authentication is required.',
+      'AUTHENTICATION_REQUIRED',
+    ));
     return;
   }
 
   try {
     const payload = jwt.verify(token, config.jwtSecret);
     const user = await findUserById(payload.sub);
+
     if (!user) {
-      throw new AppError(401, 'The session is no longer valid.', 'INVALID_SESSION');
+      throw new AppError(
+        401,
+        'The session is no longer valid.',
+        'INVALID_SESSION',
+      );
     }
 
     request.user = toSafeUser(user);
     next();
   } catch (error) {
+    await logAccessDenied(request);
+
     if (error instanceof AppError) {
       next(error);
       return;
     }
 
-    next(new AppError(401, 'The session is invalid or has expired.', 'INVALID_SESSION'));
+    next(new AppError(
+      401,
+      'The session is invalid or has expired.',
+      'INVALID_SESSION',
+    ));
   }
 }
 
 export function requireRole(...roles) {
-  return (request, response, next) => {
+  return async (request, response, next) => {
     if (!request.user) {
-      next(new AppError(401, 'Authentication is required.', 'AUTHENTICATION_REQUIRED'));
+      await logAccessDenied(request);
+
+      next(new AppError(
+        401,
+        'Authentication is required.',
+        'AUTHENTICATION_REQUIRED',
+      ));
       return;
     }
 
     if (!roles.includes(request.user.role)) {
-      next(new AppError(403, 'You do not have permission to perform this action.', 'FORBIDDEN'));
+      await logAccessDenied(request, request.user.id);
+
+      next(new AppError(
+        403,
+        'You do not have permission to perform this action.',
+        'FORBIDDEN',
+      ));
       return;
     }
 
