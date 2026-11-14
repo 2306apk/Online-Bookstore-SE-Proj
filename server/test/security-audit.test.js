@@ -55,12 +55,8 @@ async function getEvents(eventType) {
 }
 
 before(async () => {
-  if (process.env.MONGODB_URI) {
-    await mongoose.connect(process.env.MONGODB_URI);
-  } else {
-    mongo = await MongoMemoryServer.create();
-    await mongoose.connect(mongo.getUri());
-  }
+  mongo = await MongoMemoryServer.create();
+  await mongoose.connect(mongo.getUri());
 });
 
 beforeEach(async () => {
