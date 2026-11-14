@@ -6,6 +6,7 @@ import { PaymentAttempt } from './models/PaymentAttempt.js';
 import { buildCheckoutSummary } from './checkout.service.js';
 import { assertStrictObjectId } from './object-id.js';
 import { commitLines, releaseLines, reserveLines, reconcileReservations } from './stock-reservations.js';
+import { buildTracking, canCancelStatus } from './order.lifecycle.js';
 import { PaymentFailure, simulatePayment, simulateReversal } from './payment.gateway.js';
 
 const orderNumber = () => `OBS-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`;
@@ -37,6 +38,9 @@ export function serializeOrder(order) {
     address: order.address,
     payment: { method: order.payment.method, status: order.payment.status, reference: order.payment.reference },
     createdAt: order.createdAt,
+    cancelledAt: order.cancelledAt ?? null,
+    tracking: buildTracking(order),
+    canCancel: canCancelStatus(order.status),
   };
 }
 
@@ -223,6 +227,7 @@ export async function createOrder(userId, input, { payment = gateway.payment, re
         total: summary.total,
         address: summary.address,
         payment: { method: 'SANDBOX', status: 'SUCCEEDED', reference: charge.reference },
+        statusHistory: [{ status: 'PLACED', at: new Date() }],
       });
     } catch (error) {
       // Payment captured but no order: undo both halves, and tell the customer what really happened.

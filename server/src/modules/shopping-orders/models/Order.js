@@ -40,7 +40,13 @@ const orderSchema = new mongoose.Schema(
     },
     // The checkout attempt that produced this order. Unique, so one attempt can never create two orders.
     attempt: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentAttempt', default: undefined },
-    // Used by cancellation (OBS-28) so stock is restored exactly once.
+    // Timeline for order tracking (OBS-27): PLACED -> SHIPPED -> DELIVERED, or PLACED -> CANCELLED.
+    statusHistory: {
+      type: [{ status: { type: String, enum: ORDER_STATUSES }, at: { type: Date, default: Date.now }, _id: false }],
+      default: [],
+    },
+    cancelledAt: { type: Date, default: undefined },
+    // Cancellation (OBS-28): true once every line of this order has gone back into stock.
     stockRestored: { type: Boolean, default: false },
   },
   { timestamps: true },
