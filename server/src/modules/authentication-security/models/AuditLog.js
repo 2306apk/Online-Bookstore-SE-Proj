@@ -15,8 +15,12 @@ const auditLogSchema = new mongoose.Schema(
         'ADMIN_BOOK_CREATED',
         'ADMIN_BOOK_UPDATED',
         'ADMIN_BOOK_DEACTIVATED',
+        'ADMIN_BOOK_RESTOCKED',
         'ADMIN_CATEGORY_CREATED',
         'ADMIN_CATEGORY_UPDATED',
+        'ADMIN_ORDER_STATUS_UPDATED',
+        'ADMIN_REVIEW_MODERATED',
+        'ADMIN_REVIEW_DELETED',
       ],
     },
     userId: {

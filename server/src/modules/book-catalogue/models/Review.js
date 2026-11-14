@@ -1,5 +1,12 @@
 import mongoose from 'mongoose';
 
+export const REVIEW_STATUSES = Object.freeze([
+  'APPROVED',
+  'FLAGGED',
+  'REJECTED',
+  'DELETED',
+]);
+
 const reviewSchema = new mongoose.Schema(
   {
     book: {
@@ -29,12 +36,23 @@ const reviewSchema = new mongoose.Schema(
       minlength: 10,
       maxlength: 1000,
     },
+    status: {
+      type: String,
+      enum: REVIEW_STATUSES,
+      default: 'APPROVED',
+      index: true,
+    },
+    isVerifiedPurchase: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );
 
 reviewSchema.index({ book: 1, customer: 1 }, { unique: true });
 reviewSchema.index({ book: 1, createdAt: -1 });
+reviewSchema.index({ status: 1, createdAt: -1 });
 
 export const Review =
   mongoose.models.Review || mongoose.model('Review', reviewSchema);

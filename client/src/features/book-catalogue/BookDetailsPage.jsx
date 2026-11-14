@@ -146,6 +146,19 @@ export function BookDetailsPage() {
     }
   }
 
+  async function handleDeleteOwnReview() {
+    setReviewError('');
+    try {
+      await apiFetch(`/books/${encodeURIComponent(id)}/reviews/mine`, {
+        method: 'DELETE',
+      });
+      setReviewSubmitted(false);
+      await loadReviews();
+    } catch (err) {
+      setReviewError(err.message || 'Unable to delete review.');
+    }
+  }
+
   if (loading || authLoading) {
     return (
       <main className="book-details-page">
@@ -243,25 +256,51 @@ export function BookDetailsPage() {
                   <p>No reviews have been submitted yet.</p>
                 ) : (
                   <div className="book-review-list">
-                    {reviews.map((review) => (
-                      <article
-                        className="book-review"
-                        key={review.id}
-                      >
-                        <p>
-                          <strong>{review.customerName}</strong>
-                        </p>
-                        <p>
-                          Rating: {review.rating} / 5
-                        </p>
-                        <p>{review.comment}</p>
-                        <small>
-                          {review.createdAt
-                            ? new Date(review.createdAt).toLocaleDateString()
-                            : ''}
-                        </small>
-                      </article>
-                    ))}
+                    {reviews.map((review) => {
+                      const isOwnReview =
+                        user &&
+                        (review.customerId === user.id ||
+                          review.customerId === user._id);
+
+                      return (
+                        <article
+                          className="book-review"
+                          key={review.id}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <strong>{review.customerName}</strong>
+                            {review.isVerifiedPurchase && (
+                              <span
+                                className="status-chip live"
+                                style={{ fontSize: '0.72rem', padding: '2px 6px' }}
+                              >
+                                ✓ Verified Purchase
+                              </span>
+                            )}
+                          </div>
+                          <p>
+                            Rating: {review.rating} / 5
+                          </p>
+                          <p>{review.comment}</p>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <small>
+                              {review.createdAt
+                                ? new Date(review.createdAt).toLocaleDateString()
+                                : ''}
+                            </small>
+                            {isOwnReview && (
+                              <button
+                                type="button"
+                                className="text-button danger-text"
+                                onClick={handleDeleteOwnReview}
+                              >
+                                Delete my review
+                              </button>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </>
