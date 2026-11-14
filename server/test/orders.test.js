@@ -12,7 +12,8 @@ import { Category } from '../src/modules/book-catalogue/models/Category.js';
 import { Cart } from '../src/modules/shopping-orders/models/Cart.js';
 import { Order } from '../src/modules/shopping-orders/models/Order.js';
 import { PaymentAttempt } from '../src/modules/shopping-orders/models/PaymentAttempt.js';
-import { createOrder, recoverIncompleteCheckouts } from '../src/modules/shopping-orders/order.service.js';
+import { MAX_REVERSAL_ATTEMPTS, createOrder, listPaymentsNeedingReview, recoverIncompleteCheckouts } from '../src/modules/shopping-orders/order.service.js';
+import { reconcileReservations, releaseLines, reserveLines } from '../src/modules/shopping-orders/stock-reservations.js';
 
 let mongo;
 let category;
@@ -262,7 +263,8 @@ describe('OBS-26: failed payment', () => {
     await addToCart(agent, bookOne, 2);
     mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
     const response = await agent.post('/api/orders').send(body());
-    assert.equal(response.status, 500);
+    assert.equal(response.status, 402);
+    assert.equal(response.body.error.code, 'ORDER_CREATION_FAILED');
     mock.restoreAll();
     assert.equal(await stockOf(bookOne), 5);
     assert.equal(await Order.countDocuments(), 0);
@@ -309,11 +311,14 @@ describe('OBS-26: stock safety', () => {
   });
 });
 
-// ---------- review fixes: recovery, cart reconciliation, explicit payment reversal ----------
+// ---------- review fixes: stock ledger, recovery leases, honest payment reversal ----------
 
 const addressInput = { fullName: 'A B', phone: '9876543210', line1: '12 MG Road', city: 'Pune', state: 'MH', postalCode: '411001', country: 'India' };
 const orderInput = () => ({ address: addressInput, shippingOption: 'STANDARD', idempotencyKey: key(), paymentScenario: 'SUCCESS' });
-const longAgo = async (attemptId) => PaymentAttempt.collection.updateOne({ _id: attemptId }, { $set: { updatedAt: new Date(Date.now() - 3600_000) } });
+const okReversal = () => mock.fn(async () => ({ status: 'REVERSED' }));
+const expire = (attemptId) => PaymentAttempt.collection.updateOne({ _id: attemptId }, { $set: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+const reservationsOf = async (book) => (await Book.findById(book._id).select('+reservations').lean()).reservations ?? [];
+const attemptOf = (filter) => PaymentAttempt.findOne(filter).lean();
 
 async function customerWithCart(book = bookOne, quantity = 2) {
   const customer = await createCustomer();
@@ -321,93 +326,384 @@ async function customerWithCart(book = bookOne, quantity = 2) {
   return { ...customer, userId: customer.user.id };
 }
 
-describe('OBS-26 review fix 1: interrupted checkout recovery', () => {
-  test('an abandoned attempt that reserved stock gets its stock back, exactly once', async () => {
+// An attempt that a crashed process left behind: stock really reserved (through the ledger), lease long expired.
+async function crashedAttempt(userId, extra = {}) {
+  const attempt = await PaymentAttempt.create({
+    user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
+    lines: [{ book: bookOne._id, quantity: 2 }], leaseOwner: 'dead-process', leaseExpiresAt: new Date(Date.now() - 1000),
+    ...extra,
+  });
+  assert.equal(await reserveLines(attempt._id, attempt.lines), true);
+  return attempt;
+}
+
+// A payment call that waits until the test lets it finish, so a test can act while a checkout is "in flight".
+function slowPayment(reference = 'SIM-SLOW') {
+  let open;
+  let reached;
+  const gate = new Promise((resolve) => { open = resolve; });
+  const arrived = new Promise((resolve) => { reached = resolve; });
+  return { arrived, open, payment: async () => { reached(); await gate; return { status: 'SUCCEEDED', reference }; } };
+}
+
+describe('OBS-26 review fix 1: stock and its record are one write', () => {
+  test('reserving takes the stock and records the hold together; repeating it takes nothing more', async () => {
     const { userId } = await customerWithCart();
-    await Book.updateOne({ _id: bookOne._id }, { $inc: { stock: -2 } }); // the crash happened after reserving
-    const attempt = await PaymentAttempt.create({
-      user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
-      reserved: [{ book: bookOne._id, quantity: 2 }],
-    });
-    await longAgo(attempt._id);
-
-    const first = await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
-    assert.equal(first.abandoned, 1);
-    assert.equal(await stockOf(bookOne), 5);
-    const stored = await PaymentAttempt.findById(attempt._id).lean();
-    assert.equal(stored.status, 'FAILED');
-    assert.equal(stored.failureCode, 'CHECKOUT_ABANDONED');
-    assert.equal(stored.reserved.length, 0);
-
-    await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
-    await Promise.all([recoverIncompleteCheckouts({ olderThanMs: 60_000 }), recoverIncompleteCheckouts({ olderThanMs: 60_000 })]);
-    assert.equal(await stockOf(bookOne), 5, 'repeated or simultaneous recovery must never add stock twice');
+    const attempt = await crashedAttempt(userId);
+    assert.equal(await stockOf(bookOne), 3);
+    const held = await reservationsOf(bookOne);
+    assert.equal(held.length, 1);
+    assert.equal(String(held[0].attempt), String(attempt._id));
+    assert.equal(held[0].quantity, 2);
+    assert.equal(await reserveLines(attempt._id, attempt.lines), true);
+    assert.equal(await stockOf(bookOne), 3, 'a repeated reserve must not take stock twice');
+    assert.equal((await reservationsOf(bookOne)).length, 1);
   });
 
-  test('a recent attempt (still being processed) is left alone', async () => {
+  test('a reserve that cannot be fully met leaves no stock taken and no hold recorded', async () => {
     const { userId } = await customerWithCart();
-    await Book.updateOne({ _id: bookOne._id }, { $inc: { stock: -2 } });
-    const attempt = await PaymentAttempt.create({
-      user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
-      reserved: [{ book: bookOne._id, quantity: 2 }],
+    const attempt = await PaymentAttempt.create({ user: userId, idempotencyKey: key(), amount: 1, currency: 'INR' });
+    const lines = [{ book: bookOne._id, quantity: 2 }, { book: bookTwo._id, quantity: 99 }];
+    assert.equal(await reserveLines(attempt._id, lines), false);
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal(await stockOf(bookTwo), 3);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+  });
+
+  test('releasing is exactly-once, even when repeated and simultaneous', async () => {
+    const { userId } = await customerWithCart();
+    const attempt = await crashedAttempt(userId);
+    await Promise.all([releaseLines(attempt._id, attempt.lines), releaseLines(attempt._id, attempt.lines), releaseLines(attempt._id, attempt.lines)]);
+    await releaseLines(attempt._id, attempt.lines);
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+  });
+
+  test('a crash after the stock was reserved: recovery returns it, once', async () => {
+    const { userId } = await customerWithCart();
+    const attempt = await crashedAttempt(userId);
+    const first = await recoverIncompleteCheckouts();
+    assert.equal(first.abandoned, 1);
+    assert.equal(await stockOf(bookOne), 5);
+    const stored = await attemptOf({ _id: attempt._id });
+    assert.equal(stored.status, 'FAILED');
+    assert.equal(stored.failureCode, 'CHECKOUT_ABANDONED');
+    await recoverIncompleteCheckouts();
+    await Promise.all([recoverIncompleteCheckouts(), recoverIncompleteCheckouts()]);
+    assert.equal(await stockOf(bookOne), 5, 'repeated or simultaneous recovery must never add stock twice');
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+  });
+
+  test('a crash while giving the stock back is repaired by the next run', async () => {
+    const { userId } = await customerWithCart();
+    const attempt = await crashedAttempt(userId);
+    const realUpdate = Book.updateOne.bind(Book);
+    let crashed = false;
+    mock.method(Book, 'updateOne', (...args) => {
+      if (!crashed) { crashed = true; throw new Error('process died'); }
+      return realUpdate(...args);
     });
-    const result = await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
+    await assert.rejects(recoverIncompleteCheckouts(), /process died/);
+    mock.restoreAll();
+    assert.equal((await attemptOf({ _id: attempt._id })).status, 'FAILED', 'the attempt was closed before the stock was touched');
+    assert.equal(await stockOf(bookOne), 3, 'the stock is still held, and still recorded as held');
+    assert.equal((await reservationsOf(bookOne)).length, 1);
+    const repair = await recoverIncompleteCheckouts();
+    assert.equal(repair.stock.released, 1);
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+  });
+
+  test('a crash after the order was confirmed but before the hold was cleared: the stock stays taken', async () => {
+    const { agent, userId } = await customerWithCart();
+    const { body: created } = await agent.post('/api/orders').send(body());
+    const order = await Order.findById(created.order.id).lean();
+    await Book.updateOne({ _id: bookOne._id }, { $push: { reservations: { attempt: order.attempt, quantity: 2 } } });
+    assert.equal(await stockOf(bookOne), 3);
+    const result = await reconcileReservations();
+    assert.deepEqual(result, { committed: 1, released: 0 });
+    assert.equal(await stockOf(bookOne), 3, 'stock for a real order must never be returned');
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+    assert.ok(userId);
+  });
+
+  test('a hold whose attempt no longer exists is returned; a hold of a live attempt is left alone', async () => {
+    const { userId } = await customerWithCart();
+    const live = await crashedAttempt(userId, { leaseOwner: 'live', leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const ghost = new mongoose.Types.ObjectId();
+    await Book.updateOne({ _id: bookTwo._id }, { $inc: { stock: -1 }, $push: { reservations: { attempt: ghost, quantity: 1 } } });
+    const result = await reconcileReservations();
+    assert.deepEqual(result, { committed: 0, released: 1 });
+    assert.equal(await stockOf(bookTwo), 3);
+    assert.equal(await stockOf(bookOne), 3, 'the live attempt keeps its stock');
+    assert.equal((await reservationsOf(bookOne)).length, 1);
+    assert.ok(live);
+  });
+});
+
+describe('OBS-26 review fix 2: recovery never races a live checkout or another recovery run', () => {
+  test('an attempt whose lease has not expired is not touched', async () => {
+    const { userId } = await customerWithCart();
+    const attempt = await crashedAttempt(userId, { leaseOwner: 'live', leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const result = await recoverIncompleteCheckouts();
     assert.equal(result.abandoned, 0);
     assert.equal(await stockOf(bookOne), 3);
-    assert.equal((await PaymentAttempt.findById(attempt._id).lean()).status, 'RESERVED');
+    assert.equal((await attemptOf({ _id: attempt._id })).status, 'RESERVED');
+  });
+
+  test('a checkout that is still working keeps its attempt: recovery leaves it alone and the order completes', async () => {
+    const { userId } = await customerWithCart();
+    const slow = slowPayment();
+    const pending = createOrder(userId, orderInput(), { payment: slow.payment });
+    await slow.arrived; // stock reserved, payment in flight
+    const during = await recoverIncompleteCheckouts();
+    assert.equal(during.abandoned, 0);
+    assert.equal(await stockOf(bookOne), 3);
+    slow.open();
+    const { order, replayed } = await pending;
+    assert.equal(replayed, false);
+    assert.equal(order.itemCount, 2);
+    assert.equal(await stockOf(bookOne), 3);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+    assert.equal(await Order.countDocuments(), 1);
+    assert.equal((await attemptOf({ user: userId })).status, 'SUCCEEDED');
+  });
+
+  test('a checkout stalled past its lease is taken over; when it wakes up it reverses its own charge and stops', async () => {
+    const { userId } = await customerWithCart();
+    const reversal = okReversal();
+    const slow = slowPayment('SIM-STALLED');
+    const pending = createOrder(userId, orderInput(), { payment: slow.payment, reversal });
+    const settled = pending.catch((error) => error);
+    await slow.arrived;
+    const attempt = await attemptOf({ user: userId });
+    await expire(attempt._id); // the checkout froze for longer than its lease
+    const takeover = await recoverIncompleteCheckouts({ reversal });
+    assert.equal(takeover.abandoned, 1);
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal(reversal.mock.callCount(), 0, 'nothing was known to be charged yet');
+
+    slow.open(); // the frozen checkout wakes up, its payment call finally returns
+    const error = await settled;
+    assert.equal(error.code, 'CHECKOUT_INTERRUPTED');
+    assert.equal(await Order.countDocuments(), 0, 'it must not create an order after losing its attempt');
+    assert.equal(reversal.mock.callCount(), 1, 'the late charge is reversed exactly once');
+    assert.equal(reversal.mock.calls[0].arguments[0].reference, 'SIM-STALLED');
+    const stored = await attemptOf({ _id: attempt._id });
+    assert.equal(stored.paymentState, 'REVERSED');
+    assert.equal(stored.status, 'FAILED');
+    assert.equal(stored.failureCode, 'CHECKOUT_ABANDONED');
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+  });
+
+  test('recovery closes an attempt just before its order is written: the late order is removed, stock and money are undone', async () => {
+    const { userId } = await customerWithCart();
+    const reversal = okReversal();
+    const realCreate = Order.create.bind(Order);
+    mock.method(Order, 'create', async (...args) => {
+      const attempt = await attemptOf({ user: userId });
+      await expire(attempt._id);
+      await recoverIncompleteCheckouts({ reversal }); // takes over, sees no order yet, abandons
+      return realCreate(...args); // the stalled checkout now writes its order anyway
+    });
+    await assert.rejects(createOrder(userId, orderInput(), { reversal }), (error) => error.code === 'CHECKOUT_INTERRUPTED');
+    mock.restoreAll();
+    assert.equal(await Order.countDocuments(), 0);
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal(reversal.mock.callCount(), 1);
+    assert.equal((await attemptOf({ user: userId })).paymentState, 'REVERSED');
+  });
+
+  test('recovery finishes an attempt whose order was already written: that order is kept', async () => {
+    const { userId } = await customerWithCart();
+    const realCreate = Order.create.bind(Order);
+    mock.method(Order, 'create', async (...args) => {
+      const order = await realCreate(...args);
+      const attempt = await attemptOf({ user: userId });
+      await expire(attempt._id);
+      const result = await recoverIncompleteCheckouts({ reversal: okReversal() }); // sees the order, completes the attempt
+      assert.equal(result.completed, 1);
+      return order;
+    });
+    const { order, replayed } = await createOrder(userId, orderInput());
+    mock.restoreAll();
+    assert.equal(replayed, false);
+    assert.equal(await Order.countDocuments(), 1);
+    assert.equal(await stockOf(bookOne), 3);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+    const stored = await attemptOf({ user: userId });
+    assert.equal(stored.status, 'SUCCEEDED');
+    assert.equal(String(stored.order), order.id);
+  });
+
+  test('overlapping recovery runs handle one attempt once (one reversal, one stock return)', async () => {
+    const { userId } = await customerWithCart();
+    await crashedAttempt(userId, { paymentState: 'CAPTURED', reference: 'SIM-OVERLAP' });
+    const reversal = mock.fn(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); return { status: 'REVERSED' }; });
+    const runs = await Promise.all([1, 2, 3].map(() => recoverIncompleteCheckouts({ reversal })));
+    assert.equal(runs.reduce((total, run) => total + run.abandoned, 0), 1);
+    assert.equal(reversal.mock.callCount(), 1);
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+    assert.equal((await attemptOf({ user: userId })).paymentState, 'REVERSED');
   });
 
   test('a crash after the order was saved is completed, not undone (stock stays taken)', async () => {
     const { agent, userId } = await customerWithCart();
     const { body: created } = await agent.post('/api/orders').send(body());
-    // Put the attempt back into the half-finished state a crash would leave behind.
     const order = await Order.findById(created.order.id).lean();
+    // Put the attempt back into the half-finished state a crash would leave behind.
     await PaymentAttempt.collection.updateOne(
       { _id: order.attempt },
-      { $set: { status: 'RESERVED', order: null, cartCleared: false, reserved: [{ book: bookOne._id, quantity: 2 }], updatedAt: new Date(Date.now() - 3600_000) } },
+      { $set: { status: 'RESERVED', order: null, cartCleared: false, leaseOwner: 'dead-process', leaseExpiresAt: new Date(Date.now() - 1000) } },
     );
-    await addToCart(agent, bookOne, 2); // same row ids are not reused, so re-add and point the attempt at the new row
+    await Book.updateOne({ _id: bookOne._id }, { $push: { reservations: { attempt: order.attempt, quantity: 2 } } });
+    await addToCart(agent, bookOne, 2); // row ids are not reused: re-add, then point the attempt at the new row
     const cart = await Cart.findOne({ user: userId }).lean();
     await PaymentAttempt.collection.updateOne({ _id: order.attempt }, { $set: { cartItemIds: cart.items.map((item) => String(item._id)) } });
 
-    const result = await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
+    const result = await recoverIncompleteCheckouts();
     assert.equal(result.completed, 1);
     assert.equal(await stockOf(bookOne), 3, 'stock for a real order must not be released');
-    const stored = await PaymentAttempt.findById(order.attempt).lean();
+    assert.equal((await reservationsOf(bookOne)).length, 0);
+    const stored = await attemptOf({ _id: order.attempt });
     assert.equal(stored.status, 'SUCCEEDED');
     assert.equal(String(stored.order), created.order.id);
     assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 0);
     assert.equal(await Order.countDocuments(), 1);
   });
+});
 
-  test('a crash after payment was captured but before the order existed reverses the payment and frees the stock', async () => {
+describe('OBS-26 review fix 3: honest payment reversal', () => {
+  test('when the order cannot be saved and the reversal works, the customer is told the payment was reversed', async () => {
     const { userId } = await customerWithCart();
-    await Book.updateOne({ _id: bookOne._id }, { $inc: { stock: -2 } });
-    const attempt = await PaymentAttempt.create({
-      user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
-      paymentState: 'CAPTURED', reference: 'SIM-CRASH1', reserved: [{ book: bookOne._id, quantity: 2 }],
-    });
-    await longAgo(attempt._id);
-    const reversal = mock.fn(async () => ({ status: 'REVERSED' }));
-    await recoverIncompleteCheckouts({ olderThanMs: 60_000, reversal });
+    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
+    mock.method(console, 'error', () => {});
+    const reversal = okReversal();
+    await assert.rejects(
+      createOrder(userId, orderInput(), { reversal }),
+      (error) => error.statusCode === 402 && error.code === 'ORDER_CREATION_FAILED' && /payment was reversed/.test(error.message),
+    );
+    mock.restoreAll();
     assert.equal(reversal.mock.callCount(), 1);
-    assert.equal(reversal.mock.calls[0].arguments[0].reference, 'SIM-CRASH1');
+    const call = reversal.mock.calls[0].arguments[0];
+    assert.match(call.reference, /^SIM-/);
+    assert.ok(call.amount > 0);
+    const attempt = await attemptOf({ user: userId });
+    assert.equal(attempt.paymentState, 'REVERSED');
+    assert.equal(attempt.status, 'FAILED');
+    assert.equal(attempt.failureCode, 'ORDER_CREATION_FAILED');
     assert.equal(await stockOf(bookOne), 5);
-    assert.equal((await PaymentAttempt.findById(attempt._id).lean()).paymentState, 'REVERSED');
-    await recoverIncompleteCheckouts({ olderThanMs: 60_000, reversal });
-    assert.equal(reversal.mock.callCount(), 1, 'a finished attempt is never reversed twice');
+    assert.equal(await Order.countDocuments(), 0);
+  });
+
+  test('when the reversal itself fails, the message does not claim a reversal; the attempt is flagged and logged', async () => {
+    const { userId } = await customerWithCart();
+    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
+    const logged = mock.method(console, 'error', () => {});
+    const reversal = mock.fn(async () => { throw new Error('gateway offline'); });
+    await assert.rejects(createOrder(userId, orderInput(), { reversal }), (error) => {
+      assert.equal(error.statusCode, 402);
+      assert.equal(error.code, 'PAYMENT_REVERSAL_FAILED');
+      assert.doesNotMatch(error.message, /payment was reversed/);
+      assert.match(error.message, /could not confirm/);
+      assert.match(error.message, /do not pay again/);
+      return true;
+    });
+    mock.restoreAll();
+    const attempt = await attemptOf({ user: userId });
+    assert.equal(attempt.paymentState, 'REVERSAL_FAILED');
+    assert.equal(attempt.reversalAttempts, 1);
+    assert.equal(attempt.reversalError, 'gateway offline');
+    assert.equal(attempt.status, 'FAILED');
+    assert.equal(attempt.failureCode, 'PAYMENT_REVERSAL_FAILED');
+    assert.ok(logged.mock.calls.some((call) => String(call.arguments[0]).includes('[PAYMENT][ACTION REQUIRED] Reversal failed')));
+    assert.equal(await stockOf(bookOne), 5, 'stock is returned even when the money could not be');
+    assert.equal(await Order.countDocuments(), 0);
+  });
+
+  test('repeating the same request after a failed reversal repeats the honest message and does not charge again', async () => {
+    const { userId } = await customerWithCart();
+    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
+    mock.method(console, 'error', () => {});
+    const reversal = mock.fn(async () => { throw new Error('gateway offline'); });
+    const payment = mock.fn(async () => ({ status: 'SUCCEEDED', reference: 'SIM-ONCE' }));
+    const input = orderInput();
+    const first = await createOrder(userId, input, { payment, reversal }).catch((error) => error);
+    const again = await createOrder(userId, input, { payment, reversal }).catch((error) => error);
+    mock.restoreAll();
+    assert.equal(first.code, 'PAYMENT_REVERSAL_FAILED');
+    assert.equal(again.code, first.code);
+    assert.equal(again.message, first.message);
+    assert.equal(payment.mock.callCount(), 1);
+    assert.equal(reversal.mock.callCount(), 1);
+  });
+
+  test('recovery retries a failed reversal, then stops retrying and keeps it flagged for a person', async () => {
+    const { userId } = await customerWithCart();
+    await crashedAttempt(userId, { paymentState: 'CAPTURED', reference: 'SIM-STUCK' });
+    mock.method(console, 'error', () => {});
+    const failing = mock.fn(async () => { throw new Error('gateway offline'); });
+
+    await recoverIncompleteCheckouts({ reversal: failing }); // abandons the attempt; the reversal fails (try 1)
+    assert.equal((await attemptOf({ user: userId })).paymentState, 'REVERSAL_FAILED');
+    for (let run = 0; run < MAX_REVERSAL_ATTEMPTS + 2; run += 1) await recoverIncompleteCheckouts({ reversal: failing });
+    assert.equal(failing.mock.callCount(), MAX_REVERSAL_ATTEMPTS, 'bounded: it must not retry forever');
+
+    const stuck = await attemptOf({ user: userId });
+    assert.equal(stuck.paymentState, 'REVERSAL_FAILED');
+    assert.equal(stuck.reversalAttempts, MAX_REVERSAL_ATTEMPTS);
+    const flagged = await listPaymentsNeedingReview();
+    assert.equal(flagged.length, 1);
+    assert.equal(flagged[0].reference, 'SIM-STUCK');
+    const result = await recoverIncompleteCheckouts({ reversal: failing });
+    assert.equal(result.needsReview, 1);
+    mock.restoreAll();
+  });
+
+  test('a failed reversal that works on a later try is marked REVERSED and not flagged', async () => {
+    const { userId } = await customerWithCart();
+    await crashedAttempt(userId, { paymentState: 'CAPTURED', reference: 'SIM-LATER' });
+    mock.method(console, 'error', () => {});
+    await recoverIncompleteCheckouts({ reversal: async () => { throw new Error('gateway offline'); } });
+    mock.restoreAll();
+    const working = okReversal();
+    const result = await recoverIncompleteCheckouts({ reversal: working });
+    assert.equal(result.reversalsRetried, 1);
+    assert.equal(working.mock.callCount(), 1);
+    const stored = await attemptOf({ user: userId });
+    assert.equal(stored.paymentState, 'REVERSED');
+    assert.equal((await listPaymentsNeedingReview()).length, 0);
+    await recoverIncompleteCheckouts({ reversal: working });
+    assert.equal(working.mock.callCount(), 1, 'a reversed payment is never reversed again');
+  });
+
+  test('a failed (declined) payment is never reversed because nothing was captured', async () => {
+    const { userId } = await customerWithCart();
+    const reversal = okReversal();
+    await assert.rejects(createOrder(userId, { ...orderInput(), paymentScenario: 'DECLINED' }, { reversal }), (error) => error.code === 'PAYMENT_DECLINED');
+    assert.equal(reversal.mock.callCount(), 0);
+    assert.equal((await attemptOf({ user: userId })).paymentState, 'NONE');
+    assert.equal(await stockOf(bookOne), 5);
+  });
+
+  test('one checkout attempt can never produce two orders', async () => {
+    const { agent } = await customerWithCart();
+    await agent.post('/api/orders').send(body());
+    const order = await Order.findOne().lean();
+    await assert.rejects(Order.create({ ...order, _id: new mongoose.Types.ObjectId(), orderNumber: 'OBS-DUPLICATE' }), (error) => error.code === 11000);
   });
 });
 
-describe('OBS-26 review fix 2: cart reconciliation', () => {
+describe('OBS-26 review fix: cart reconciliation', () => {
   test('if cart clean-up cannot finish, the order still succeeds and the cart is cleaned later', async () => {
     const { agent, userId } = await customerWithCart();
     mock.method(Cart, 'updateOne', async () => ({ matchedCount: 0, modifiedCount: 0 })); // every attempt loses the race
-    const payload = body();
-    const response = await agent.post('/api/orders').send(payload);
+    const response = await agent.post('/api/orders').send(body());
     mock.restoreAll();
     assert.equal(response.status, 201);
-    const attempt = await PaymentAttempt.findOne({ user: userId }).lean();
+    const attempt = await attemptOf({ user: userId });
     assert.equal(attempt.status, 'SUCCEEDED');
     assert.equal(attempt.cartCleared, false, 'the unfinished clean-up must be recorded, not forgotten');
     assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 1);
@@ -415,7 +711,7 @@ describe('OBS-26 review fix 2: cart reconciliation', () => {
     const result = await recoverIncompleteCheckouts();
     assert.equal(result.cartsCleaned, 1);
     assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 0);
-    assert.equal((await PaymentAttempt.findOne({ user: userId }).lean()).cartCleared, true);
+    assert.equal((await attemptOf({ user: userId })).cartCleared, true);
     assert.equal(await Order.countDocuments(), 1);
   });
 
@@ -429,55 +725,5 @@ describe('OBS-26 review fix 2: cart reconciliation', () => {
     assert.equal(again.status, 200);
     assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 0);
     assert.equal(await stockOf(bookOne), 3);
-  });
-});
-
-describe('OBS-26 review fix 3: captured payment without an order', () => {
-  test('when the order cannot be saved, the captured payment is reversed explicitly and recorded', async () => {
-    const { userId } = await customerWithCart();
-    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
-    const reversal = mock.fn(async () => ({ status: 'REVERSED' }));
-    await assert.rejects(createOrder(userId, orderInput(), { reversal }), /database write failed/);
-    mock.restoreAll();
-    assert.equal(reversal.mock.callCount(), 1);
-    const call = reversal.mock.calls[0].arguments[0];
-    assert.match(call.reference, /^SIM-/);
-    assert.ok(call.amount > 0);
-    const attempt = await PaymentAttempt.findOne({ user: userId }).lean();
-    assert.equal(attempt.paymentState, 'REVERSED');
-    assert.equal(attempt.status, 'FAILED');
-    assert.equal(attempt.failureCode, 'ORDER_CREATION_FAILED');
-    assert.equal(await stockOf(bookOne), 5);
-    assert.equal(await Order.countDocuments(), 0);
-  });
-
-  test('if the reversal itself fails, it is flagged REVERSAL_FAILED and logged, never silent', async () => {
-    const { userId } = await customerWithCart();
-    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
-    const logged = mock.method(console, 'error', () => {});
-    const reversal = mock.fn(async () => { throw new Error('gateway offline'); });
-    await assert.rejects(createOrder(userId, orderInput(), { reversal }), /database write failed/);
-    mock.restoreAll();
-    const attempt = await PaymentAttempt.findOne({ user: userId }).lean();
-    assert.equal(attempt.paymentState, 'REVERSAL_FAILED');
-    assert.equal(attempt.status, 'FAILED');
-    assert.ok(logged.mock.calls.some((call) => String(call.arguments[0]).includes('[PAYMENT] Reversal failed')));
-    assert.equal(await stockOf(bookOne), 5);
-    assert.equal(await Order.countDocuments(), 0);
-  });
-
-  test('a failed (declined) payment is never reversed because nothing was captured', async () => {
-    const { userId } = await customerWithCart();
-    const reversal = mock.fn(async () => ({ status: 'REVERSED' }));
-    await assert.rejects(createOrder(userId, { ...orderInput(), paymentScenario: 'DECLINED' }, { reversal }), (error) => error.code === 'PAYMENT_DECLINED');
-    assert.equal(reversal.mock.callCount(), 0);
-    assert.equal((await PaymentAttempt.findOne({ user: userId }).lean()).paymentState, 'NONE');
-  });
-
-  test('one checkout attempt can never produce two orders', async () => {
-    const { agent } = await customerWithCart();
-    await agent.post('/api/orders').send(body());
-    const order = await Order.findOne().lean();
-    await assert.rejects(Order.create({ ...order, _id: new mongoose.Types.ObjectId(), orderNumber: 'OBS-DUPLICATE' }), (error) => error.code === 11000);
   });
 });
