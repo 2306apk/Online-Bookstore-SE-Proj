@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { ApiError, apiFetch, jsonBody } from '../../api/client.js';
 import { useCart } from '../../app/CartContext.jsx';
-import { ADDRESS_FIELDS, EMPTY_ADDRESS, describeCartIssue, formatMoney, validateAddress } from './checkout-utils.js';
+import { ADDRESS_FIELDS, EMPTY_ADDRESS, PAYMENT_SCENARIOS, describeCartIssue, formatMoney, newCheckoutKey, validateAddress } from './checkout-utils.js';
 import './checkout.css';
 
 export function CheckoutPage() {
   const { cart, loading, refreshCart } = useCart();
+  const navigate = useNavigate();
+  const checkoutKey = useRef(newCheckoutKey());
+  const [paymentScenario, setPaymentScenario] = useState('SUCCESS');
+  const [paying, setPaying] = useState(false);
   const [options, setOptions] = useState(null);
   const [address, setAddress] = useState({ ...EMPTY_ADDRESS });
   const [shippingOption, setShippingOption] = useState('');
@@ -63,6 +67,34 @@ export function CheckoutPage() {
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function pay() {
+    if (!summary || paying) return;
+    setPaying(true);
+    setError('');
+    setIssues([]);
+    try {
+      // The same key is reused if the request is repeated (for example after a network drop),
+      // so the server can never create two orders for one click.
+      const { order } = await apiFetch('/orders', {
+        method: 'POST',
+        body: jsonBody({ ...address, shippingOption, idempotencyKey: checkoutKey.current, paymentScenario }),
+      });
+      await refreshCart?.();
+      navigate(`/orders/${order.id}`, { replace: true });
+    } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.status && requestError.status < 500 && requestError.code !== 'ORDER_IN_PROGRESS') {
+        checkoutKey.current = newCheckoutKey(); // a definite answer: the next attempt is a new checkout
+      }
+      if (requestError instanceof ApiError && requestError.code === 'CHECKOUT_CART_INVALID') {
+        setIssues(requestError.details?.issues ?? []);
+        refreshCart?.();
+      }
+      setError(requestError instanceof ApiError ? requestError.message : 'Could not place your order. Please try again.');
+    } finally {
+      setPaying(false);
     }
   }
 
@@ -144,7 +176,15 @@ export function CheckoutPage() {
                 {summary.address.line2 && <>{summary.address.line2}<br /></>}
                 {summary.address.city}, {summary.address.state} {summary.address.postalCode}<br />{summary.address.country}
               </address>
-              <p className="summary-note">Payment is the next step and is not available yet.</p>
+              <label className="checkout-field">
+                <span>Payment (simulation, no real money or card details)</span>
+                <select value={paymentScenario} onChange={(event) => setPaymentScenario(event.target.value)} disabled={paying}>
+                  {PAYMENT_SCENARIOS.map((scenario) => <option key={scenario.value} value={scenario.value}>{scenario.label}</option>)}
+                </select>
+              </label>
+              <button className="primary-button" type="button" onClick={pay} disabled={paying}>
+                {paying ? 'Processing payment...' : `Pay ${formatMoney(summary.total, summary.currency)} (simulated)`}
+              </button>
             </>
           ) : (
             <p className="summary-note">Fill in your delivery details and choose "Review order" to see your total.</p>

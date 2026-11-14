@@ -46,3 +46,15 @@ export function describeCartIssue(issue) {
   }
   return `"${issue.title || 'A book'}" is no longer available.`;
 }
+
+export const PAYMENT_SCENARIOS = Object.freeze([
+  { value: 'SUCCESS', label: 'Payment succeeds' },
+  { value: 'DECLINED', label: 'Payment is declined' },
+  { value: 'ERROR', label: 'Payment service error' },
+]);
+
+// One reference per checkout attempt; the server uses it to ignore accidental repeats.
+export function newCheckoutKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${Math.random().toString(36).slice(2, 12)}`;
+}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApiError } from '../../api/client.js';
 
 vi.mock('../../api/client.js', async (importOriginal) => ({ ...(await importOriginal()), apiFetch: vi.fn() }));
@@ -24,7 +24,14 @@ const values = { 'Full name': 'Anwitha Potluri', 'Phone number': '9876543210', '
 
 function setup(cart = { items: [{ itemId: 'i1' }], itemCount: 2, total: 500 }) {
   useCart.mockReturnValue({ cart, loading: false, refreshCart: vi.fn() });
-  render(<MemoryRouter><CheckoutPage /></MemoryRouter>);
+  render(
+    <MemoryRouter initialEntries={['/checkout']}>
+      <Routes>
+        <Route path="/checkout" element={<CheckoutPage />} />
+        <Route path="/orders/:orderId" element={<div>Order page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
 }
 async function fill() {
   await screen.findByText(/Standard delivery/);
@@ -53,7 +60,7 @@ describe('OBS-25: CheckoutPage', () => {
     await fill();
     fireEvent.click(screen.getByRole('button', { name: 'Review order' }));
     expect(await screen.findByText('Reliable Systems x 2')).toBeInTheDocument();
-    expect(screen.getByText(/Payment is the next step/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Pay .* \(simulated\)/ })).toBeInTheDocument();
     const [, call] = apiFetch.mock.calls;
     expect(call[0]).toBe('/checkout/summary');
     expect(JSON.parse(call[1].body)).toMatchObject({ fullName: 'Anwitha Potluri', shippingOption: 'STANDARD' });
@@ -68,5 +75,39 @@ describe('OBS-25: CheckoutPage', () => {
     await fill();
     fireEvent.click(screen.getByRole('button', { name: 'Review order' }));
     await waitFor(() => expect(screen.getByText(/only 2 left/)).toBeInTheDocument());
+  });
+
+  async function reviewed() {
+    apiFetch.mockResolvedValueOnce({ options }).mockResolvedValueOnce({ summary });
+    setup();
+    await fill();
+    fireEvent.click(screen.getByRole('button', { name: 'Review order' }));
+    await screen.findByText('Reliable Systems x 2');
+  }
+
+  it('places the order after review and goes to the confirmation page', async () => {
+    await reviewed();
+    apiFetch.mockResolvedValueOnce({ order: { id: 'o1' } });
+    fireEvent.click(screen.getByRole('button', { name: /Pay .* \(simulated\)/ }));
+    expect(await screen.findByText('Order page')).toBeInTheDocument();
+    const [path, init] = apiFetch.mock.calls.at(-1);
+    expect(path).toBe('/orders');
+    const sent = JSON.parse(init.body);
+    expect(sent.idempotencyKey.length).toBeGreaterThanOrEqual(16);
+    expect(sent.paymentScenario).toBe('SUCCESS');
+    expect(sent).not.toHaveProperty('total');
+    expect(sent).not.toHaveProperty('cardNumber');
+  });
+
+  it('shows a declined payment and uses a new reference for the next attempt', async () => {
+    await reviewed();
+    apiFetch.mockRejectedValueOnce(new ApiError('The simulated payment was declined.', 402, 'PAYMENT_DECLINED'));
+    fireEvent.click(screen.getByRole('button', { name: /Pay .* \(simulated\)/ }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('declined');
+    const firstKey = JSON.parse(apiFetch.mock.calls.at(-1)[1].body).idempotencyKey;
+    apiFetch.mockResolvedValueOnce({ order: { id: 'o2' } });
+    fireEvent.click(screen.getByRole('button', { name: /Pay .* \(simulated\)/ }));
+    await screen.findByText('Order page');
+    expect(JSON.parse(apiFetch.mock.calls.at(-1)[1].body).idempotencyKey).not.toBe(firstKey);
   });
 });

@@ -14,3 +14,5 @@
 .checkout-issues { margin: 0 0 16px; padding: 12px 12px 12px 30px; background: #fae9e3; color: #8f3e35; border-radius: 4px; }
 .cart-checkout-link { display: inline-block; margin-top: 12px; }
 @media (max-width: 760px) { .checkout-layout { grid-template-columns: 1fr; } .checkout-form { grid-template-columns: 1fr; } }
+.checkout-summary select { padding: 9px 10px; border: 1px solid var(--line, #d8ded6); border-radius: 4px; font: inherit; }
+.order-confirmation .checkout-items { margin-bottom: 18px; }
