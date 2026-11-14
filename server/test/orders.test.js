@@ -12,7 +12,7 @@ import { Category } from '../src/modules/book-catalogue/models/Category.js';
 import { Cart } from '../src/modules/shopping-orders/models/Cart.js';
 import { Order } from '../src/modules/shopping-orders/models/Order.js';
 import { PaymentAttempt } from '../src/modules/shopping-orders/models/PaymentAttempt.js';
-import { createOrder } from '../src/modules/shopping-orders/order.service.js';
+import { createOrder, recoverIncompleteCheckouts } from '../src/modules/shopping-orders/order.service.js';
 
 let mongo;
 let category;
@@ -306,5 +306,178 @@ describe('OBS-26: stock safety', () => {
     assert.equal(sold, 2);
     assert.equal(await stockOf(bookTwo), 0);
     assert.equal(await Order.countDocuments(), 2);
+  });
+});
+
+// ---------- review fixes: recovery, cart reconciliation, explicit payment reversal ----------
+
+const addressInput = { fullName: 'A B', phone: '9876543210', line1: '12 MG Road', city: 'Pune', state: 'MH', postalCode: '411001', country: 'India' };
+const orderInput = () => ({ address: addressInput, shippingOption: 'STANDARD', idempotencyKey: key(), paymentScenario: 'SUCCESS' });
+const longAgo = async (attemptId) => PaymentAttempt.collection.updateOne({ _id: attemptId }, { $set: { updatedAt: new Date(Date.now() - 3600_000) } });
+
+async function customerWithCart(book = bookOne, quantity = 2) {
+  const customer = await createCustomer();
+  await addToCart(customer.agent, book, quantity);
+  return { ...customer, userId: customer.user.id };
+}
+
+describe('OBS-26 review fix 1: interrupted checkout recovery', () => {
+  test('an abandoned attempt that reserved stock gets its stock back, exactly once', async () => {
+    const { userId } = await customerWithCart();
+    await Book.updateOne({ _id: bookOne._id }, { $inc: { stock: -2 } }); // the crash happened after reserving
+    const attempt = await PaymentAttempt.create({
+      user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
+      reserved: [{ book: bookOne._id, quantity: 2 }],
+    });
+    await longAgo(attempt._id);
+
+    const first = await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
+    assert.equal(first.abandoned, 1);
+    assert.equal(await stockOf(bookOne), 5);
+    const stored = await PaymentAttempt.findById(attempt._id).lean();
+    assert.equal(stored.status, 'FAILED');
+    assert.equal(stored.failureCode, 'CHECKOUT_ABANDONED');
+    assert.equal(stored.reserved.length, 0);
+
+    await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
+    await Promise.all([recoverIncompleteCheckouts({ olderThanMs: 60_000 }), recoverIncompleteCheckouts({ olderThanMs: 60_000 })]);
+    assert.equal(await stockOf(bookOne), 5, 'repeated or simultaneous recovery must never add stock twice');
+  });
+
+  test('a recent attempt (still being processed) is left alone', async () => {
+    const { userId } = await customerWithCart();
+    await Book.updateOne({ _id: bookOne._id }, { $inc: { stock: -2 } });
+    const attempt = await PaymentAttempt.create({
+      user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
+      reserved: [{ book: bookOne._id, quantity: 2 }],
+    });
+    const result = await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
+    assert.equal(result.abandoned, 0);
+    assert.equal(await stockOf(bookOne), 3);
+    assert.equal((await PaymentAttempt.findById(attempt._id).lean()).status, 'RESERVED');
+  });
+
+  test('a crash after the order was saved is completed, not undone (stock stays taken)', async () => {
+    const { agent, userId } = await customerWithCart();
+    const { body: created } = await agent.post('/api/orders').send(body());
+    // Put the attempt back into the half-finished state a crash would leave behind.
+    const order = await Order.findById(created.order.id).lean();
+    await PaymentAttempt.collection.updateOne(
+      { _id: order.attempt },
+      { $set: { status: 'RESERVED', order: null, cartCleared: false, reserved: [{ book: bookOne._id, quantity: 2 }], updatedAt: new Date(Date.now() - 3600_000) } },
+    );
+    await addToCart(agent, bookOne, 2); // same row ids are not reused, so re-add and point the attempt at the new row
+    const cart = await Cart.findOne({ user: userId }).lean();
+    await PaymentAttempt.collection.updateOne({ _id: order.attempt }, { $set: { cartItemIds: cart.items.map((item) => String(item._id)) } });
+
+    const result = await recoverIncompleteCheckouts({ olderThanMs: 60_000 });
+    assert.equal(result.completed, 1);
+    assert.equal(await stockOf(bookOne), 3, 'stock for a real order must not be released');
+    const stored = await PaymentAttempt.findById(order.attempt).lean();
+    assert.equal(stored.status, 'SUCCEEDED');
+    assert.equal(String(stored.order), created.order.id);
+    assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 0);
+    assert.equal(await Order.countDocuments(), 1);
+  });
+
+  test('a crash after payment was captured but before the order existed reverses the payment and frees the stock', async () => {
+    const { userId } = await customerWithCart();
+    await Book.updateOne({ _id: bookOne._id }, { $inc: { stock: -2 } });
+    const attempt = await PaymentAttempt.create({
+      user: userId, idempotencyKey: key(), status: 'RESERVED', amount: 500, currency: 'INR',
+      paymentState: 'CAPTURED', reference: 'SIM-CRASH1', reserved: [{ book: bookOne._id, quantity: 2 }],
+    });
+    await longAgo(attempt._id);
+    const reversal = mock.fn(async () => ({ status: 'REVERSED' }));
+    await recoverIncompleteCheckouts({ olderThanMs: 60_000, reversal });
+    assert.equal(reversal.mock.callCount(), 1);
+    assert.equal(reversal.mock.calls[0].arguments[0].reference, 'SIM-CRASH1');
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal((await PaymentAttempt.findById(attempt._id).lean()).paymentState, 'REVERSED');
+    await recoverIncompleteCheckouts({ olderThanMs: 60_000, reversal });
+    assert.equal(reversal.mock.callCount(), 1, 'a finished attempt is never reversed twice');
+  });
+});
+
+describe('OBS-26 review fix 2: cart reconciliation', () => {
+  test('if cart clean-up cannot finish, the order still succeeds and the cart is cleaned later', async () => {
+    const { agent, userId } = await customerWithCart();
+    mock.method(Cart, 'updateOne', async () => ({ matchedCount: 0, modifiedCount: 0 })); // every attempt loses the race
+    const payload = body();
+    const response = await agent.post('/api/orders').send(payload);
+    mock.restoreAll();
+    assert.equal(response.status, 201);
+    const attempt = await PaymentAttempt.findOne({ user: userId }).lean();
+    assert.equal(attempt.status, 'SUCCEEDED');
+    assert.equal(attempt.cartCleared, false, 'the unfinished clean-up must be recorded, not forgotten');
+    assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 1);
+
+    const result = await recoverIncompleteCheckouts();
+    assert.equal(result.cartsCleaned, 1);
+    assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 0);
+    assert.equal((await PaymentAttempt.findOne({ user: userId }).lean()).cartCleared, true);
+    assert.equal(await Order.countDocuments(), 1);
+  });
+
+  test('repeating the request also finishes an interrupted clean-up', async () => {
+    const { agent, userId } = await customerWithCart();
+    mock.method(Cart, 'updateOne', async () => ({ matchedCount: 0, modifiedCount: 0 }));
+    const payload = body();
+    await agent.post('/api/orders').send(payload);
+    mock.restoreAll();
+    const again = await agent.post('/api/orders').send(payload);
+    assert.equal(again.status, 200);
+    assert.equal((await Cart.findOne({ user: userId }).lean()).items.length, 0);
+    assert.equal(await stockOf(bookOne), 3);
+  });
+});
+
+describe('OBS-26 review fix 3: captured payment without an order', () => {
+  test('when the order cannot be saved, the captured payment is reversed explicitly and recorded', async () => {
+    const { userId } = await customerWithCart();
+    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
+    const reversal = mock.fn(async () => ({ status: 'REVERSED' }));
+    await assert.rejects(createOrder(userId, orderInput(), { reversal }), /database write failed/);
+    mock.restoreAll();
+    assert.equal(reversal.mock.callCount(), 1);
+    const call = reversal.mock.calls[0].arguments[0];
+    assert.match(call.reference, /^SIM-/);
+    assert.ok(call.amount > 0);
+    const attempt = await PaymentAttempt.findOne({ user: userId }).lean();
+    assert.equal(attempt.paymentState, 'REVERSED');
+    assert.equal(attempt.status, 'FAILED');
+    assert.equal(attempt.failureCode, 'ORDER_CREATION_FAILED');
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal(await Order.countDocuments(), 0);
+  });
+
+  test('if the reversal itself fails, it is flagged REVERSAL_FAILED and logged, never silent', async () => {
+    const { userId } = await customerWithCart();
+    mock.method(Order, 'create', async () => { throw new Error('database write failed'); });
+    const logged = mock.method(console, 'error', () => {});
+    const reversal = mock.fn(async () => { throw new Error('gateway offline'); });
+    await assert.rejects(createOrder(userId, orderInput(), { reversal }), /database write failed/);
+    mock.restoreAll();
+    const attempt = await PaymentAttempt.findOne({ user: userId }).lean();
+    assert.equal(attempt.paymentState, 'REVERSAL_FAILED');
+    assert.equal(attempt.status, 'FAILED');
+    assert.ok(logged.mock.calls.some((call) => String(call.arguments[0]).includes('[PAYMENT] Reversal failed')));
+    assert.equal(await stockOf(bookOne), 5);
+    assert.equal(await Order.countDocuments(), 0);
+  });
+
+  test('a failed (declined) payment is never reversed because nothing was captured', async () => {
+    const { userId } = await customerWithCart();
+    const reversal = mock.fn(async () => ({ status: 'REVERSED' }));
+    await assert.rejects(createOrder(userId, { ...orderInput(), paymentScenario: 'DECLINED' }, { reversal }), (error) => error.code === 'PAYMENT_DECLINED');
+    assert.equal(reversal.mock.callCount(), 0);
+    assert.equal((await PaymentAttempt.findOne({ user: userId }).lean()).paymentState, 'NONE');
+  });
+
+  test('one checkout attempt can never produce two orders', async () => {
+    const { agent } = await customerWithCart();
+    await agent.post('/api/orders').send(body());
+    const order = await Order.findOne().lean();
+    await assert.rejects(Order.create({ ...order, _id: new mongoose.Types.ObjectId(), orderNumber: 'OBS-DUPLICATE' }), (error) => error.code === 11000);
   });
 });

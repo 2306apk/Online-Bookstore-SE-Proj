@@ -13,6 +13,12 @@ const paymentAttemptSchema = new mongoose.Schema(
     failureCode: { type: String, default: '' },
     failureMessage: { type: String, default: '' },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+    // What happened to the money, tracked separately from the order so nothing is silently lost:
+    // NONE (not charged) -> CAPTURED (charged, order not saved yet) -> REVERSED, or REVERSAL_FAILED (needs a human).
+    paymentState: { type: String, enum: ['NONE', 'CAPTURED', 'REVERSED', 'REVERSAL_FAILED'], default: 'NONE' },
+    // Cart rows that this checkout ordered, so cart clean-up can be finished later if it was interrupted.
+    cartItemIds: { type: [String], default: [] },
+    cartCleared: { type: Boolean, default: false },
     reserved: {
       type: [{ book: { type: mongoose.Schema.Types.ObjectId, ref: 'Book' }, quantity: Number, _id: false }],
       default: [],

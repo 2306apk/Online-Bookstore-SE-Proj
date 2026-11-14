@@ -38,10 +38,14 @@ const orderSchema = new mongoose.Schema(
       status: { type: String, default: 'SUCCEEDED' },
       reference: { type: String, required: true },
     },
+    // The checkout attempt that produced this order. Unique, so one attempt can never create two orders.
+    attempt: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentAttempt', default: undefined },
     // Used by cancellation (OBS-28) so stock is restored exactly once.
     stockRestored: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
+
+orderSchema.index({ attempt: 1 }, { unique: true, sparse: true });
 
 export const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
