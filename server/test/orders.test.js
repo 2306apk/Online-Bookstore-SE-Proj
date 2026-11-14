@@ -583,7 +583,7 @@ describe('OBS-26 review fix 3: honest payment reversal', () => {
     const reversal = okReversal();
     await assert.rejects(
       createOrder(userId, orderInput(), { reversal }),
-      (error) => error.statusCode === 402 && error.code === 'ORDER_CREATION_FAILED' && /payment was reversed/.test(error.message),
+      (error) => error.statusCode === 402 && error.code === 'ORDER_CREATION_FAILED' && /Your payment was reversed/.test(error.message),
     );
     mock.restoreAll();
     assert.equal(reversal.mock.callCount(), 1);
@@ -606,7 +606,7 @@ describe('OBS-26 review fix 3: honest payment reversal', () => {
     await assert.rejects(createOrder(userId, orderInput(), { reversal }), (error) => {
       assert.equal(error.statusCode, 402);
       assert.equal(error.code, 'PAYMENT_REVERSAL_FAILED');
-      assert.doesNotMatch(error.message, /payment was reversed/);
+      assert.doesNotMatch(error.message, /Your payment was reversed/); // the success wording; this message only says it could not be confirmed
       assert.match(error.message, /could not confirm/);
       assert.match(error.message, /do not pay again/);
       return true;
