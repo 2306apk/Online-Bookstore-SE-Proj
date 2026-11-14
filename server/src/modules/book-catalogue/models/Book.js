@@ -69,6 +69,15 @@ const bookSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+
+    // Stock currently held by checkouts that are still in progress (OBS-26). An entry is added in the
+    // SAME update that lowers `stock`, and removed in the same update that returns it (or when the
+    // order is confirmed), so stock and its record can never disagree. Hidden from normal queries.
+    reservations: {
+      type: [{ attempt: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentAttempt' }, quantity: Number, _id: false }],
+      default: undefined,
+      select: false,
+    },
   },
   {
     timestamps: true,
@@ -83,6 +92,7 @@ const bookSchema = new mongoose.Schema(
 
 bookSchema.index({ active: 1, title: 1 });
 bookSchema.index({ category: 1, active: 1 });
+bookSchema.index({ 'reservations.attempt': 1 }, { sparse: true });
 
 export const Book =
   mongoose.models.Book ||

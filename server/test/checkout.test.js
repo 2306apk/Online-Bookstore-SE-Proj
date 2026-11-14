@@ -320,7 +320,7 @@ describe('OBS-25: server-calculated summary', () => {
     const cartAfter = await Cart.findOne({ user: user.id }).lean();
     assert.equal(cartAfter.__v, cartBefore.__v);
     assert.deepEqual(cartAfter.items.map((item) => [String(item.book), item.quantity]), cartBefore.items.map((item) => [String(item.book), item.quantity]));
-    const collections = (await mongoose.connection.db.listCollections().toArray()).map((entry) => entry.name);
-    assert.ok(!collections.includes('orders'), 'checkout preview must not create an orders collection');
+    const { Order } = await import('../src/modules/shopping-orders/models/Order.js');
+    assert.equal(await Order.countDocuments(), 0, 'checkout preview must not create an order');
   });
 });
