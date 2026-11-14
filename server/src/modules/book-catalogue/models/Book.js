@@ -78,6 +78,15 @@ const bookSchema = new mongoose.Schema(
       default: undefined,
       select: false,
     },
+
+    // Cancelled orders whose stock has already been put back (OBS-28). The marker is added in the SAME update
+    // that raises `stock`, so a repeated or simultaneous cancellation can never restore the same order twice.
+    // Markers are kept on purpose: removing one would re-open the door to a second restore.
+    restorations: {
+      type: [{ order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' }, quantity: Number, _id: false }],
+      default: undefined,
+      select: false,
+    },
   },
   {
     timestamps: true,

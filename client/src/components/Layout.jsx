@@ -29,6 +29,7 @@ export function Layout() {
               Wishlist {wishlist?.wishlist.count > 0 && <span className="cart-count">{wishlist.wishlist.count}</span>}
             </NavLink>
           )}
+          {user?.role === 'CUSTOMER' && <NavLink to="/orders">Orders</NavLink>}
           {user?.role === 'CUSTOMER' && (
             <NavLink to="/cart" className="cart-link">
               Cart <span className="cart-count">{cart.itemCount}</span>

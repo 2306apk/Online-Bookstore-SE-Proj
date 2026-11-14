@@ -37,10 +37,23 @@ const orderSchema = new mongoose.Schema(
       method: { type: String, default: 'SANDBOX' },
       status: { type: String, default: 'SUCCEEDED' },
       reference: { type: String, required: true },
+      // Refund bookkeeping (OBS-28). Status: SUCCEEDED -> REFUNDING -> REFUNDED, or REFUND_FAILED.
+      // refundClaimedAt is a lease: a refund still REFUNDING after the lease ran out was interrupted and is retried.
+      refundAttempts: { type: Number, default: 0 },
+      refundClaimedAt: { type: Date, default: undefined },
+      // True while a refund has failed and a person may need to follow up. Cleared when the refund succeeds.
+      needsReview: { type: Boolean, default: false },
+      refundError: { type: String, default: undefined },
     },
     // The checkout attempt that produced this order. Unique, so one attempt can never create two orders.
     attempt: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentAttempt', default: undefined },
-    // Used by cancellation (OBS-28) so stock is restored exactly once.
+    // Timeline for order tracking (OBS-27): PLACED -> SHIPPED -> DELIVERED, or PLACED -> CANCELLED.
+    statusHistory: {
+      type: [{ status: { type: String, enum: ORDER_STATUSES }, at: { type: Date, default: Date.now }, _id: false }],
+      default: [],
+    },
+    cancelledAt: { type: Date, default: undefined },
+    // Cancellation (OBS-28): true once every line of this order has gone back into stock.
     stockRestored: { type: Boolean, default: false },
   },
   { timestamps: true },

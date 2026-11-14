@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, apiFetch } from '../../api/client.js';
+import { OrderCancelButton } from './OrderCancelButton.jsx';
+import { OrderTracking } from './OrderTracking.jsx';
 import { formatMoney } from './checkout-utils.js';
 import './checkout.css';
+import './orders.css';
 
 export function OrderConfirmationPage() {
   const { orderId } = useParams();
@@ -30,8 +33,8 @@ export function OrderConfirmationPage() {
   return (
     <section className="checkout-page order-confirmation">
       <div className="section-intro">
-        <p className="eyebrow">Order confirmed</p>
-        <h1>Thank you for your order</h1>
+        <p className="eyebrow">{order.status === 'CANCELLED' ? 'Order cancelled' : 'Order details'}</p>
+        <h1>{order.status === 'CANCELLED' ? 'This order was cancelled' : 'Thank you for your order'}</h1>
         <p>Order number <strong>{order.orderNumber}</strong>. This was a payment simulation, so no money was charged.</p>
       </div>
       <div className="checkout-layout">
@@ -57,6 +60,9 @@ export function OrderConfirmationPage() {
           <div className="summary-line"><span>Tax</span><span>{formatMoney(order.tax.amount, order.currency)}</span></div>
           <div className="summary-line total-line"><span>Total</span><strong>{formatMoney(order.total, order.currency)}</strong></div>
           <div className="summary-line"><span>Payment</span><span>{order.payment.status} ({order.payment.reference})</span></div>
+          {order.tracking && <OrderTracking tracking={order.tracking} />}
+          <OrderCancelButton order={order} onCancelled={setOrder} />
+          <Link className="remove-button" to="/orders">All my orders</Link>
           <Link className="remove-button" to="/">Continue shopping</Link>
         </aside>
       </div>

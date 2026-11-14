@@ -1,0 +1,20 @@
+.orders-page { padding-top: 10px; }
+.orders-list { display: grid; gap: 18px; }
+.order-card { border: 1px solid var(--line, #d8ded6); border-radius: 6px; padding: 18px; display: grid; gap: 12px; }
+.order-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.order-card-head h2 { margin: 0; font: 600 1.05rem/1.2 'Playfair Display', serif; }
+.order-card-head time { font-size: 0.8rem; opacity: 0.7; }
+.order-status { padding: 2px 10px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; background: #e0eee8; color: var(--teal-dark, #1f5c4a); }
+.order-status.status-cancelled { background: #fae9e3; color: #8f3e35; }
+.order-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.order-items li { display: flex; justify-content: space-between; gap: 12px; }
+.order-tracking { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 26px; }
+.order-tracking li { display: flex; align-items: center; gap: 7px; font-size: 0.85rem; opacity: 0.5; }
+.order-tracking li.is-reached { opacity: 1; }
+.tracking-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor; }
+.is-reached .tracking-dot { background: var(--teal-dark, #1f5c4a); border-color: var(--teal-dark, #1f5c4a); }
+.is-cancelled .tracking-dot { background: #c8614e; border-color: #c8614e; }
+.tracking-time { font-size: 0.72rem; opacity: 0.7; }
+.order-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.order-cancel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.orders-pager { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 18px; }

@@ -1,3 +1,4 @@
+import { finishPendingCancellations } from './order.lifecycle.service.js';
 import { recoverIncompleteCheckouts } from './order.service.js';
 
 const FIVE_MINUTES = 5 * 60 * 1000;
@@ -12,6 +13,7 @@ export function startCheckoutRecovery({ intervalMs = FIVE_MINUTES } = {}) {
     running = true;
     try {
       await recoverIncompleteCheckouts();
+      await finishPendingCancellations(); // cancellations that stopped before stock or refund were finished
     } catch (error) {
       console.error(`[RECOVERY] ${error.message}`);
     } finally {

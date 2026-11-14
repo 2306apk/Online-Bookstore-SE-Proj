@@ -13,7 +13,9 @@ export class PaymentFailure extends Error {
 /**
  * THE GATEWAY CONTRACT (what a real sandbox/gateway must provide to replace this file):
  *   charge({ amount, currency, scenario })   -> { status: 'SUCCEEDED', reference } or throws PaymentFailure
- *   reverse({ reference, amount, currency }) -> { status: 'REVERSED' } or throws (void/refund of a captured charge)
+ *   reverse({ reference, amount, currency, idempotencyKey }) -> { status: 'REVERSED' } or throws (void/refund of a captured charge)
+ *     The idempotencyKey is stable for one refund, so calling reverse() again after a crash or timeout must NOT
+ *     refund twice: the gateway must return the first result for the same key (real gateways support this).
  * The order service calls reverse() whenever money was captured but no order could be saved, and it
  * records the outcome. A real gateway that cannot reverse a charge must NOT be plugged in without
  * extra handling, because "charged but no order" would then be silent.
@@ -29,7 +31,12 @@ export async function simulatePayment({ amount, currency, scenario = 'SUCCESS' }
   return { status: 'SUCCEEDED', reference: `SIM-${randomBytes(6).toString('hex').toUpperCase()}`, currency };
 }
 
-export async function simulateReversal({ reference }) {
+const completedReversals = new Map();
+
+export async function simulateReversal({ reference, idempotencyKey }) {
+  if (idempotencyKey && completedReversals.has(idempotencyKey)) return completedReversals.get(idempotencyKey); // same key, same refund
   if (!reference) throw new PaymentFailure('PAYMENT_REVERSAL_FAILED', 'There is no payment to reverse.');
-  return { status: 'REVERSED', reference };
+  const result = { status: 'REVERSED', reference };
+  if (idempotencyKey) completedReversals.set(idempotencyKey, result);
+  return result;
 }
