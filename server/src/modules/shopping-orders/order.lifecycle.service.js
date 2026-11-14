@@ -69,29 +69,67 @@ async function restoreStock(orderId) {
   await Order.updateOne({ _id: orderId }, { $set: { stockRestored: true } });
 }
 
-async function refundPayment(orderId, reversal) {
-  // Claim the refund so it is attempted once, even if two cancel requests overlap.
-  const claim = await Order.updateOne({ _id: orderId, 'payment.status': 'SUCCEEDED' }, { $set: { 'payment.status': 'REFUNDING' } });
+// A refund that has failed this many times stops retrying and stays flagged for a person (payment.needsReview).
+export const MAX_REFUND_ATTEMPTS = 3;
+const REFUND_LEASE_MS = 5 * 60 * 1000;
+
+/**
+ * Refund state machine: SUCCEEDED -> REFUNDING -> REFUNDED, or -> REFUND_FAILED (flagged, retried a few times).
+ * One update claims the refund (and starts a lease), so overlapping requests or recovery runs cannot both
+ * start it. A claim is possible from SUCCEEDED, from REFUND_FAILED while attempts remain, and from a REFUNDING
+ * whose lease ran out (the process died mid-refund). Every call to the gateway carries the same
+ * idempotencyKey, so retrying after a crash cannot refund twice: the gateway returns the first result.
+ */
+async function refundPayment(orderId, reversal, { now = new Date(), leaseMs = REFUND_LEASE_MS } = {}) {
+  const expired = new Date(now.getTime() - leaseMs);
+  const claim = await Order.updateOne(
+    {
+      _id: orderId,
+      $or: [
+        { 'payment.status': 'SUCCEEDED' },
+        { 'payment.status': 'REFUND_FAILED', 'payment.refundAttempts': { $lt: MAX_REFUND_ATTEMPTS } },
+        { 'payment.status': 'REFUNDING', 'payment.refundClaimedAt': { $lt: expired } },
+      ],
+    },
+    { $set: { 'payment.status': 'REFUNDING', 'payment.refundClaimedAt': now }, $inc: { 'payment.refundAttempts': 1 } },
+  );
   if (claim.matchedCount !== 1) return;
+
   const order = await Order.findById(orderId).lean();
   try {
-    await reversal({ reference: order.payment.reference, amount: order.total, currency: order.currency });
-    await Order.updateOne({ _id: orderId }, { $set: { 'payment.status': 'REFUNDED' } });
+    await reversal({ reference: order.payment.reference, amount: order.total, currency: order.currency, idempotencyKey: `refund-${orderId}` });
+    await Order.updateOne(
+      { _id: orderId, 'payment.status': 'REFUNDING' },
+      { $set: { 'payment.status': 'REFUNDED', 'payment.needsReview': false }, $unset: { 'payment.refundError': '' } },
+    );
   } catch (error) {
-    await Order.updateOne({ _id: orderId }, { $set: { 'payment.status': 'REFUND_FAILED' } });
-    console.error(`[PAYMENT] Refund failed for order ${order.orderNumber} (${order.payment.reference}): ${error.message}`);
+    await Order.updateOne(
+      { _id: orderId, 'payment.status': 'REFUNDING' },
+      { $set: { 'payment.status': 'REFUND_FAILED', 'payment.needsReview': true, 'payment.refundError': String(error.message).slice(0, 200) } },
+    );
+    const attempts = order.payment.refundAttempts;
+    console.error(`[PAYMENT] Refund failed for order ${order.orderNumber} (${order.payment.reference}), attempt ${attempts} of ${MAX_REFUND_ATTEMPTS}${attempts >= MAX_REFUND_ATTEMPTS ? ': needs manual follow-up' : ''}: ${error.message}`);
   }
 }
 
 // Finishes whatever a cancellation still owes (stock back, refund). Safe to repeat or run concurrently.
-export async function finishCancellation(orderId, { reversal = simulateReversal } = {}) {
+export async function finishCancellation(orderId, { reversal = simulateReversal, now, leaseMs } = {}) {
   await restoreStock(orderId);
-  await refundPayment(orderId, reversal);
+  await refundPayment(orderId, reversal, { now, leaseMs });
 }
 
-export async function finishPendingCancellations({ reversal = simulateReversal } = {}) {
-  const pending = await Order.find({ status: 'CANCELLED', $or: [{ stockRestored: false }, { 'payment.status': 'REFUNDING' }] }).select('_id');
-  for (const { _id } of pending) await finishCancellation(_id, { reversal });
+// Picks up cancellations that stopped part-way: stock not restored, a refund interrupted (REFUNDING), or a failed
+// refund that still has attempts left. Refunds that used up their attempts stay REFUND_FAILED + needsReview.
+export async function finishPendingCancellations({ reversal = simulateReversal, now = new Date(), leaseMs } = {}) {
+  const pending = await Order.find({
+    status: 'CANCELLED',
+    $or: [
+      { stockRestored: false },
+      { 'payment.status': 'REFUNDING' },
+      { 'payment.status': 'REFUND_FAILED', 'payment.refundAttempts': { $lt: MAX_REFUND_ATTEMPTS } },
+    ],
+  }).select('_id');
+  for (const { _id } of pending) await finishCancellation(_id, { reversal, now, leaseMs });
   return { finished: pending.length };
 }
 

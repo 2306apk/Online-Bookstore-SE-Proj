@@ -59,9 +59,19 @@ before(async () => {
   }
 });
 
+before(async () => {
+  // One admin for the whole file: sign-ins are rate limited (50 per 15 minutes), so do not log in for every test.
+  await User.deleteMany({});
+  const email = `hist-admin-${Date.now()}@example.com`;
+  await User.create({ name: 'Admin', email, passwordHash: await hashPassword(password), role: 'ADMIN' });
+  adminAgent = request.agent(app);
+  assert.equal((await adminAgent.post('/api/auth/login').send({ email, password })).status, 200);
+});
+
 beforeEach(async () => {
   mock.restoreAll();
-  await Promise.all([User, Book, Category, Cart, Order, PaymentAttempt].map((model) => model.deleteMany({})));
+  await Promise.all([Book, Category, Cart, Order, PaymentAttempt].map((model) => model.deleteMany({})));
+  await User.deleteMany({ role: 'CUSTOMER' });
   await Promise.all([Order.syncIndexes(), PaymentAttempt.syncIndexes()]);
   category = await Category.create({ name: 'History Cat', slug: 'history-cat', description: 'History tests' });
   const base = { author: 'Test', description: 'd', keywords: ['t'], active: true, category: category._id };
@@ -69,10 +79,6 @@ beforeEach(async () => {
     { ...base, title: 'Book One', price: 250, stock: 10 },
     { ...base, title: 'Book Two', price: 120, stock: 6 },
   ]);
-  const email = `hist-admin-${Date.now()}@example.com`;
-  await User.create({ name: 'Admin', email, passwordHash: await hashPassword(password), role: 'ADMIN' });
-  adminAgent = request.agent(app);
-  assert.equal((await adminAgent.post('/api/auth/login').send({ email, password })).status, 200);
 });
 
 after(async () => {
@@ -340,3 +346,136 @@ describe('OBS-28: cancellation', () => {
     assert.equal(await stockOf(bookOne), 10);
   });
 });
+
+// ---------- review fix: interrupted and failed refunds ----------
+
+// A stand-in for a real gateway: it remembers every refund by idempotency key and never refunds a key twice.
+function fakeGateway({ failFirst = 0, crashAfterRefundOnce = false } = {}) {
+  const refunds = new Map();
+  const keys = [];
+  let calls = 0;
+  let crashed = false;
+  const reversal = async ({ idempotencyKey, reference }) => {
+    calls += 1;
+    keys.push(idempotencyKey);
+    if (calls <= failFirst) throw new Error('gateway offline');
+    if (!refunds.has(idempotencyKey)) refunds.set(idempotencyKey, { reference, status: 'REVERSED' }); // money moves here
+    if (crashAfterRefundOnce && !crashed) { crashed = true; throw new Error('connection lost after refund'); }
+    return refunds.get(idempotencyKey);
+  };
+  return { reversal, refunds, keys, calls: () => calls };
+}
+
+const longAgoDate = () => new Date(Date.now() - 3600_000);
+const paymentOf = async (orderId) => (await Order.findById(orderId).lean()).payment;
+
+describe('OBS-28 review fix: interrupted and failed refunds', () => {
+  test('a refund interrupted mid-way (stuck REFUNDING, lease expired) is finished by recovery, once', async () => {
+    const { user, order } = await placeOrder(bookOne, 2);
+    await cancelOwnOrder(user.id, order.id); // cancels and refunds normally first
+    // Put the order back into the state a crash during the refund leaves behind.
+    await Order.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(order.id) },
+      { $set: { 'payment.status': 'REFUNDING', 'payment.refundClaimedAt': longAgoDate(), 'payment.refundAttempts': 1 } },
+    );
+    const gateway = fakeGateway();
+    const result = await finishPendingCancellations({ reversal: gateway.reversal });
+    assert.equal(result.finished, 1);
+    const payment = await paymentOf(order.id);
+    assert.equal(payment.status, 'REFUNDED');
+    assert.equal(payment.needsReview, false);
+    assert.equal(gateway.refunds.size, 1);
+    await finishPendingCancellations({ reversal: gateway.reversal });
+    assert.equal(gateway.calls(), 1, 'a finished refund is never requested again');
+  });
+
+  test('a refund that is still within its lease is left alone (another worker is on it)', async () => {
+    const { user, order } = await placeOrder(bookOne, 1);
+    await cancelOwnOrder(user.id, order.id);
+    await Order.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(order.id) },
+      { $set: { 'payment.status': 'REFUNDING', 'payment.refundClaimedAt': new Date(), 'payment.refundAttempts': 1 } },
+    );
+    const gateway = fakeGateway();
+    await finishPendingCancellations({ reversal: gateway.reversal });
+    assert.equal(gateway.calls(), 0);
+    assert.equal((await paymentOf(order.id)).status, 'REFUNDING');
+  });
+
+  test('crash AFTER the money moved: the retry reuses the same key, so the customer is refunded exactly once', async () => {
+    const { user, order } = await placeOrder(bookOne, 2);
+    const gateway = fakeGateway({ crashAfterRefundOnce: true });
+    const logged = mock.method(console, 'error', () => {});
+    const first = await cancelOwnOrder(user.id, order.id, { reversal: gateway.reversal });
+    mock.restoreAll();
+    assert.equal(first.order.payment.status, 'REFUND_FAILED');
+    const flagged = await paymentOf(order.id);
+    assert.equal(flagged.needsReview, true);
+    assert.equal(flagged.refundAttempts, 1);
+    assert.ok(logged.mock.calls.some((call) => String(call.arguments[0]).includes('[PAYMENT] Refund failed')));
+
+    await finishPendingCancellations({ reversal: gateway.reversal });
+    const done = await paymentOf(order.id);
+    assert.equal(done.status, 'REFUNDED');
+    assert.equal(done.needsReview, false);
+    assert.equal(gateway.refunds.size, 1, 'one refund, not two');
+    assert.equal(gateway.keys.length, 2);
+    assert.equal(gateway.keys[0], gateway.keys[1], 'both attempts carry the same idempotency key');
+    assert.equal(await stockOf(bookOne), 10);
+  });
+
+  test('a failing gateway is retried a few times, then stays REFUND_FAILED and flagged for manual follow-up', async () => {
+    const { user, order } = await placeOrder(bookOne, 1);
+    const gateway = fakeGateway({ failFirst: 100 });
+    const logged = mock.method(console, 'error', () => {});
+    await cancelOwnOrder(user.id, order.id, { reversal: gateway.reversal });
+    for (let run = 0; run < 5; run += 1) await finishPendingCancellations({ reversal: gateway.reversal });
+    mock.restoreAll();
+    const payment = await paymentOf(order.id);
+    assert.equal(payment.status, 'REFUND_FAILED');
+    assert.equal(payment.needsReview, true);
+    assert.equal(payment.refundAttempts, 3);
+    assert.equal(payment.refundError, 'gateway offline');
+    assert.equal(gateway.calls(), 3, 'it stops retrying after the limit');
+    assert.ok(logged.mock.calls.some((call) => String(call.arguments[0]).includes('needs manual follow-up')));
+    // The cancellation itself is unaffected: stock is back and the order is cancelled.
+    assert.equal(await stockOf(bookOne), 10);
+    assert.equal((await Order.findById(order.id).lean()).status, 'CANCELLED');
+  });
+
+  test('a failed refund that works on a later try ends REFUNDED and unflagged', async () => {
+    const { user, order } = await placeOrder(bookOne, 1);
+    const gateway = fakeGateway({ failFirst: 1 });
+    mock.method(console, 'error', () => {});
+    await cancelOwnOrder(user.id, order.id, { reversal: gateway.reversal });
+    mock.restoreAll();
+    assert.equal((await paymentOf(order.id)).status, 'REFUND_FAILED');
+    await finishPendingCancellations({ reversal: gateway.reversal });
+    const payment = await paymentOf(order.id);
+    assert.equal(payment.status, 'REFUNDED');
+    assert.equal(payment.needsReview, false);
+    assert.equal(payment.refundError, undefined);
+    assert.equal(gateway.refunds.size, 1);
+  });
+
+  test('overlapping recovery runs request an interrupted refund once', async () => {
+    const { user, order } = await placeOrder(bookOne, 1);
+    await cancelOwnOrder(user.id, order.id);
+    await Order.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(order.id) },
+      { $set: { 'payment.status': 'REFUNDING', 'payment.refundClaimedAt': longAgoDate(), 'payment.refundAttempts': 1 } },
+    );
+    const gateway = fakeGateway();
+    await Promise.all([1, 2, 3].map(() => finishPendingCancellations({ reversal: gateway.reversal })));
+    assert.equal(gateway.refunds.size, 1);
+    assert.equal((await paymentOf(order.id)).status, 'REFUNDED');
+  });
+
+  test('the default simulated gateway also refuses to refund the same key twice', async () => {
+    const { simulateReversal } = await import('../src/modules/shopping-orders/payment.gateway.js');
+    const first = await simulateReversal({ reference: 'SIM-X', idempotencyKey: 'refund-test-1' });
+    const second = await simulateReversal({ reference: 'SIM-X', idempotencyKey: 'refund-test-1' });
+    assert.equal(first, second);
+  });
+});
+
