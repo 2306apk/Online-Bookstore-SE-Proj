@@ -15,6 +15,7 @@ import { validate } from '../../middleware/validate.js';
 import { createReviewSchema } from './review.schemas.js';
 import {
   createBookReview,
+  deleteOwnReview,
   listBookReviews,
 } from './review.service.js';
 
@@ -135,6 +136,25 @@ router.post(
     );
 
     return response.status(201).json({ review });
+  })
+);
+
+// Delete own review. Only authenticated CUSTOMER accounts are allowed.
+router.delete(
+  '/:id/reviews/mine',
+  authenticate,
+  requireRole('CUSTOMER'),
+  asyncHandler(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new AppError(
+        400,
+        'Invalid book identifier.',
+        'INVALID_IDENTIFIER'
+      );
+    }
+
+    const result = await deleteOwnReview(request.params.id, request.user.id);
+    return response.status(200).json(result);
   })
 );
 

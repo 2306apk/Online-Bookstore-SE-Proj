@@ -49,3 +49,22 @@ export const updateCategorySchema = z.object({
   active: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, 'At least one category field is required.');
 
+export const restockBookSchema = z.object({
+  quantity: z.number().int({ message: 'Restock quantity must be a whole number.' })
+    .positive({ message: 'Restock quantity must be greater than zero.' })
+    .max(1000000, { message: 'Restock quantity cannot exceed 1,000,000.' }),
+});
+
+export const updateAdminOrderStatusSchema = z.object({
+  status: z.enum(['SHIPPED', 'DELIVERED'], {
+    errorMap: () => ({ message: 'Status must be SHIPPED or DELIVERED.' }),
+  }),
+});
+
+export const updateReviewStatusSchema = z.object({
+  status: z.enum(['APPROVED', 'FLAGGED', 'REJECTED', 'DELETED'], {
+    errorMap: () => ({ message: 'Status must be APPROVED, FLAGGED, REJECTED, or DELETED.' }),
+  }),
+});
+
+

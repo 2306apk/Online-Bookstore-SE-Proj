@@ -10,17 +10,28 @@ import {
 import {
   createBookSchema,
   createCategorySchema,
+  restockBookSchema,
+  updateAdminOrderStatusSchema,
   updateBookSchema,
   updateCategorySchema,
+  updateReviewStatusSchema,
 } from './schemas.js';
 import {
   createBook,
   createCategory,
   deactivateBook,
+  deleteAdminReview,
+  getAdminOrder,
+  getAdminOrderSummary,
   listAdminBooks,
   listAdminCategories,
+  listAdminOrders,
+  listAdminReviews,
+  restockBook,
+  updateAdminOrderStatus,
   updateBook,
   updateCategory,
+  updateReviewModerationStatus,
 } from './service.js';
 
 // Record successful administrative actions without sensitive data.
@@ -79,6 +90,86 @@ router.delete('/books/:bookId', asyncHandler(async (request, response) => {
   await logAdminAction(request, 'ADMIN_BOOK_DEACTIVATED');
 
   response.json({ book });
+}));
+
+// Restock book inventory.
+router.post('/books/:bookId/restock', validate(restockBookSchema), asyncHandler(async (request, response) => {
+  const book = await restockBook(request.params.bookId, request.body.quantity);
+
+  await logAdminAction(request, 'ADMIN_BOOK_RESTOCKED');
+
+  response.json({ book });
+}));
+
+// ==================== ORDER FULFILLMENT ====================
+
+// Order summary and sales statistics.
+router.get('/orders/summary', asyncHandler(async (request, response) => {
+  const summary = await getAdminOrderSummary();
+  response.json({ summary });
+}));
+
+// List all orders with optional status filter and pagination.
+router.get('/orders', asyncHandler(async (request, response) => {
+  const result = await listAdminOrders(request.query);
+  response.json(result);
+}));
+
+// Get a single order detail.
+router.get('/orders/:orderId', asyncHandler(async (request, response) => {
+  const order = await getAdminOrder(request.params.orderId);
+  response.json({ order });
+}));
+
+// Advance order fulfillment status (PLACED -> SHIPPED -> DELIVERED).
+router.patch('/orders/:orderId/status', validate(updateAdminOrderStatusSchema), asyncHandler(async (request, response) => {
+  const order = await updateAdminOrderStatus(request.params.orderId, request.body.status);
+
+  await logAdminAction(request, 'ADMIN_ORDER_STATUS_UPDATED');
+
+  response.json({ order });
+}));
+
+router.put('/orders/:orderId/status', validate(updateAdminOrderStatusSchema), asyncHandler(async (request, response) => {
+  const order = await updateAdminOrderStatus(request.params.orderId, request.body.status);
+
+  await logAdminAction(request, 'ADMIN_ORDER_STATUS_UPDATED');
+
+  response.json({ order });
+}));
+
+// ==================== REVIEW MODERATION ====================
+
+// List all reviews with optional status filter and pagination.
+router.get('/reviews', asyncHandler(async (request, response) => {
+  const result = await listAdminReviews(request.query);
+  response.json(result);
+}));
+
+// Moderate a review (APPROVED, FLAGGED, REJECTED, DELETED).
+router.patch('/reviews/:reviewId/status', validate(updateReviewStatusSchema), asyncHandler(async (request, response) => {
+  const review = await updateReviewModerationStatus(request.params.reviewId, request.body.status);
+
+  await logAdminAction(request, 'ADMIN_REVIEW_MODERATED');
+
+  response.json({ review });
+}));
+
+router.put('/reviews/:reviewId/status', validate(updateReviewStatusSchema), asyncHandler(async (request, response) => {
+  const review = await updateReviewModerationStatus(request.params.reviewId, request.body.status);
+
+  await logAdminAction(request, 'ADMIN_REVIEW_MODERATED');
+
+  response.json({ review });
+}));
+
+// Delete an inappropriate review.
+router.delete('/reviews/:reviewId', asyncHandler(async (request, response) => {
+  const result = await deleteAdminReview(request.params.reviewId);
+
+  await logAdminAction(request, 'ADMIN_REVIEW_DELETED');
+
+  response.json(result);
 }));
 
 // ==================== CATEGORY MANAGEMENT ====================

@@ -111,4 +111,47 @@ describe('OBS-21: Book Details Page', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Book not found.');
     expect(screen.getByRole('link', { name: 'Back to Catalogue' })).toHaveAttribute('href', '/');
   });
+
+  it('displays customer reviews with verified purchase badge and allows deletion of own review', async () => {
+    mocks.user = { id: 'cust-1', role: 'CUSTOMER' };
+    const sampleReviews = [
+      {
+        id: 'rev-1',
+        rating: 5,
+        comment: 'Comprehensive guide to reliability.',
+        customerName: 'Alice',
+        customerId: 'cust-1',
+        isVerifiedPurchase: true,
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    mocks.apiFetch.mockImplementation((url) => {
+      if (url === '/books/book-123') return Promise.resolve({ book: sampleBook });
+      if (url === '/books/book-123/reviews') {
+        return Promise.resolve({
+          reviews: sampleReviews,
+          rating: { average: 5, count: 1 },
+        });
+      }
+      if (url === '/books/book-123/reviews/mine') return Promise.resolve({ message: 'Deleted' });
+      return Promise.resolve({});
+    });
+
+    renderDetails();
+
+    expect(await screen.findByText('Comprehensive guide to reliability.')).toBeInTheDocument();
+    expect(screen.getByText('✓ Verified Purchase')).toBeInTheDocument();
+
+    const deleteBtn = screen.getByRole('button', { name: 'Delete my review' });
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/books/book-123/reviews/mine',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
 });
+
