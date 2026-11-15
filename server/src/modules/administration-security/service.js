@@ -133,14 +133,15 @@ export async function restockBook(bookId, quantity) {
     throw new AppError(400, 'Restock quantity must be a positive integer.', 'INVALID_QUANTITY');
   }
 
-  const book = await Book.findById(bookId);
+  const book = await Book.findByIdAndUpdate(
+    bookId,
+    { $inc: { stock: parsedQty } },
+    { new: true, runValidators: true }
+  ).populate('category');
+
   if (!book) {
     throw new AppError(404, 'The book was not found.', 'BOOK_NOT_FOUND');
   }
-
-  book.stock += parsedQty;
-  await book.save();
-  await book.populate('category');
 
   return toBook(book);
 }

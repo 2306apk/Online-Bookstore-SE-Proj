@@ -192,6 +192,30 @@ describe('OBS-30: Book Inventory Restocking', () => {
       .send({ quantity: 5 });
     assert.equal(notFoundRes.status, 404);
   });
+
+  test('atomically increments stock without lost updates under concurrent restock requests', async () => {
+    const freshBook = await Book.create({
+      title: 'Concurrency Test Book',
+      author: 'Author',
+      price: 200,
+      stock: 10,
+      active: true,
+      category: category._id,
+    });
+    const bookId = freshBook._id.toString();
+
+    const restockPromises = Array.from({ length: 5 }, () =>
+      adminAgent.post(`/api/admin/books/${bookId}/restock`).send({ quantity: 10 })
+    );
+
+    const responses = await Promise.all(restockPromises);
+    for (const res of responses) {
+      assert.equal(res.status, 200);
+    }
+
+    const updated = await Book.findById(freshBook._id);
+    assert.equal(updated.stock, 60);
+  });
 });
 
 describe('OBS-30: Order Fulfillment Management', () => {
